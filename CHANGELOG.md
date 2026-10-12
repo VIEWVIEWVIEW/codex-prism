@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.4.2] - 2026-10-12
+
+Faster review processing, incremental file refresh, batched chat rendering, fewer unnecessary LaTeX recompilations, and a fix for empty legacy project history. See [release notes](docs/releases/1.4.2.md) for changes and installation instructions.
+
 ## [1.4.0] - 2026-10-07
 
 Codex-powered scientific writing, improved chat/review and PDF workflows, optional Python/skills setup, and TeX Live-only compilation. See [release notes](docs/releases/1.4.0.md) for changes, installation and migration instructions.
