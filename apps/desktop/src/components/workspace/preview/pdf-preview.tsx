@@ -506,12 +506,19 @@ export function PdfPreview() {
   const handleExport = async () => {
     const currentPdf = getCurrentPdfBytes();
     if (!currentPdf) return;
-    const mainFile = files.find(
-      (f) => f.name === "main.tex" || f.name === "document.tex",
-    );
-    const defaultName = mainFile
-      ? mainFile.name.replace(/\.tex$/, ".pdf")
-      : "document.pdf";
+    const projectName =
+      projectRoot?.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "document";
+    const now = new Date();
+    const timestamp = [
+      now.getFullYear(),
+      now.getMonth() + 1,
+      now.getDate(),
+      now.getHours(),
+      now.getMinutes(),
+    ]
+      .map((part) => String(part).padStart(2, "0"))
+      .join("-");
+    const defaultName = `${projectName}-${timestamp}.pdf`;
     const filePath = await save({
       title: "Export PDF",
       defaultPath: defaultName,
