@@ -47,9 +47,6 @@ import {
 import { HistoryPanel } from "@/components/workspace/history-panel";
 import {
   compileLatex,
-  detectTexlive,
-  detectTexEngine,
-  type TexliveStatus,
   loadExistingPdf,
   synctexEdit,
   resolveCompileTarget,
@@ -96,14 +93,6 @@ const ZOOM_OPTIONS = [
 ];
 
 export function PdfPreview() {
-  const [texliveStatus, setTexliveStatus] = useState<TexliveStatus | null>(
-    null,
-  );
-  useEffect(() => {
-    void detectTexlive()
-      .then(setTexliveStatus)
-      .catch(() => {});
-  }, []);
   const autoRecompile = useSettingsStore((s) => s.autoRecompile);
   const setAutoRecompile = useSettingsStore((s) => s.setAutoRecompile);
   const contentGeneration = useDocumentStore((s) => s.contentGeneration);
@@ -937,10 +926,6 @@ export function PdfPreview() {
     );
   };
 
-  const engine = detectTexEngine(
-    files.find((f) => f.id === currentRootFileId)?.content ?? "",
-  );
-
   return (
     <div
       ref={previewContainerRef}
@@ -948,15 +933,6 @@ export function PdfPreview() {
     >
       <div className="flex h-[calc(var(--workspace-topbar-height)+var(--titlebar-height))] shrink-0 flex-nowrap items-center border-border border-b bg-background px-2">
         <div className="flex min-w-0 shrink-0 items-center gap-1">
-          <span
-            className="px-2 text-muted-foreground text-xs"
-            title={`TeX Live: ${engine}. Set % !TEX program = pdflatex, xelatex or lualatex in the main document to choose an engine.${texliveStatus && !texliveStatus.engines.includes(engine) ? ` ${engine} is not installed. Install TeX Live to compile; existing PDFs remain available.` : ""}`}
-          >
-            {engine}
-            {texliveStatus && !texliveStatus.engines.includes(engine)
-              ? " (missing)"
-              : ""}
-          </span>
           {isSaving && (
             <div className="flex items-center gap-1.5 rounded-md bg-muted/50 px-2 py-1">
               <LoaderIcon className="size-3.5 animate-spin text-muted-foreground" />
