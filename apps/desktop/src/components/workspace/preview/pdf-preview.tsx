@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { getPdfArrayBuffer } from "@/lib/mupdf/pdf-data";
 import {
   FileTextIcon,
   SpellCheckIcon,
@@ -807,7 +808,7 @@ export function PdfPreview() {
                 }
               >
                 <PdfViewer
-                  data={data}
+                  data={getPdfArrayBuffer(data)}
                   scale={scale}
                   rootFileId={rootId}
                   isActive={isActive}

@@ -197,7 +197,7 @@ export interface CaptureResult {
 }
 
 interface PdfViewerProps {
-  data: Uint8Array;
+  data: ArrayBuffer;
   scale: number;
   /** Root file ID for scroll position caching across file switches. */
   rootFileId?: string;
@@ -414,8 +414,7 @@ export function PdfViewer({
     const gen = ++loadGenRef.current;
     prevRootFileIdRef.current = rootFileId;
 
-    const pdfData =
-      data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer);
+    const pdfData = new Uint8Array(data);
 
     // Validate PDF header — must start with %PDF-
     if (

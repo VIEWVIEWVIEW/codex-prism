@@ -1,4 +1,5 @@
 import { readProjectBytes } from "@/lib/tauri/fs";
+import { getPdfArrayBuffer } from "@/lib/mupdf/pdf-data";
 import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import {
   Annotation,
@@ -1495,7 +1496,7 @@ function InlinePdfContent({
         style={{ opacity: fitted ? 1 : 0 }}
       >
         <PdfViewer
-          data={pdfData}
+          data={getPdfArrayBuffer(pdfData)}
           scale={imageScale}
           onScaleChange={onImageScaleChange}
           onFirstPageSize={handleFirstPageSize}
