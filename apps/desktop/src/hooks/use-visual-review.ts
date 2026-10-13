@@ -37,11 +37,14 @@ export function useVisualReview(main?: string) {
     setMetadata({ state: "preparing" });
     const client = getMupdfClient();
     async function prepare() {
+      const changes = review.changes.filter(
+        (change) => !change.path.toLowerCase().endsWith(".pdf"),
+      );
       if (
         !project ||
         project !== documentProject ||
         review.active ||
-        !review.changes.length
+        !changes.length
       ) {
         setMetadata({ state: review.active ? "preparing" : "unavailable" });
         return;
@@ -66,7 +69,7 @@ export function useVisualReview(main?: string) {
       }
       const mappingStarted = performance.now();
       let cards: VisualItem[] = [];
-      for (const change of review.changes) {
+      for (const change of changes) {
         const blocks =
           change.binary || !change.path.endsWith(".tex")
             ? []
