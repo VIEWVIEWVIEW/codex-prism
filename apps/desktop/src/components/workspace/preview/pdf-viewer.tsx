@@ -198,6 +198,10 @@ export interface CaptureResult {
 
 interface PdfViewerProps {
   data: ArrayBuffer;
+  artifactId?: string;
+  selectedRegion?: { page: number; x: number; y: number };
+  onPageClick?: (page: number, x: number, y: number) => void;
+  renderOverlay?: (page: number) => React.ReactNode;
   scale: number;
   /** Root file ID for scroll position caching across file switches. */
   rootFileId?: string;
@@ -220,6 +224,10 @@ interface PdfViewerProps {
 
 export function PdfViewer({
   data,
+  artifactId,
+  selectedRegion,
+  onPageClick,
+  renderOverlay,
   scale,
   rootFileId,
   isActive = true,
@@ -434,7 +442,7 @@ export function PdfViewer({
     }
 
     // Fast path: synchronous cache check — avoids async gap, state churn, and re-renders
-    const syncResult = getCachedDocument(pdfData);
+    const syncResult = getCachedDocument(pdfData, artifactId);
     if (syncResult && syncResult.docId === docIdRef.current) {
       // Same document already displayed — only restore scroll position on file switch
       isFirstLoad.current = false;
@@ -506,7 +514,10 @@ export function PdfViewer({
 
     (async () => {
       try {
-        const { docId, pageSizes: sizes } = await getOrOpenDocument(pdfData);
+        const { docId, pageSizes: sizes } = await getOrOpenDocument(
+          pdfData,
+          artifactId,
+        );
         if (gen !== loadGenRef.current) return;
 
         docIdRef.current = docId;
@@ -530,7 +541,21 @@ export function PdfViewer({
         onError?.(err instanceof Error ? err.message : String(err));
       }
     })();
-  }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [data, artifactId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!selectedRegion) return;
+    const container = containerRef.current;
+    const page = container?.querySelector(
+      `[data-page-number="${selectedRegion.page}"]`,
+    );
+    if (container && page)
+      container.scrollTop +=
+        page.getBoundingClientRect().top -
+        container.getBoundingClientRect().top +
+        selectedRegion.y * scale -
+        60;
+  }, [selectedRegion?.page, selectedRegion?.x, selectedRegion?.y, pageSizes]);
 
   // IntersectionObserver for lazy page rendering — only when active
   useEffect(() => {
@@ -1162,6 +1187,20 @@ export function PdfViewer({
         cursor: captureMode ? "crosshair" : undefined,
         touchAction: captureMode ? "none" : "pan-x pan-y",
       }}
+      onClick={(event) => {
+        if (!onPageClick || window.getSelection()?.toString()) return;
+        const page = (event.target as HTMLElement).closest<HTMLElement>(
+          ".mupdf-page",
+        );
+        if (page) {
+          const rect = page.getBoundingClientRect();
+          onPageClick(
+            Number(page.dataset.pageNumber),
+            (event.clientX - rect.left) / scale,
+            (event.clientY - rect.top) / scale,
+          );
+        }
+      }}
       onMouseDownCapture={() => containerRef.current?.focus()}
       onMouseDown={handleCaptureMouseDown}
       onMouseMove={handleCaptureMouseMove}
@@ -1181,6 +1220,9 @@ export function PdfViewer({
         {pageSizes.map((size, i) => (
           <MupdfPage
             key={i}
+            overlay={
+              visiblePages.has(i + 1) ? renderOverlay?.(i + 1) : undefined
+            }
             docId={docIdRef.current}
             pageIndex={i}
             scale={scale}

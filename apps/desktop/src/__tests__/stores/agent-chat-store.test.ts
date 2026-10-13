@@ -74,6 +74,7 @@ describe("Codex turn lifecycle", () => {
       "gpt-5.6-sol",
       "xhigh",
       [],
+      undefined,
     );
     expect(save.mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(backend.agent.send).mock.invocationCallOrder[0],
@@ -345,12 +346,10 @@ it("discards buffered text when switching projects", () => {
     useAgentChatStore.setState({
       tabs: [{ ...useAgentChatStore.getState().tabs[0], sessionId: "thread1" }],
     });
-    useAgentChatStore
-      .getState()
-      .handleEvent({
-        method: "item/agentMessage/delta",
-        params: { threadId: "thread1", itemId: "new", delta: "old project" },
-      });
+    useAgentChatStore.getState().handleEvent({
+      method: "item/agentMessage/delta",
+      params: { threadId: "thread1", itemId: "new", delta: "old project" },
+    });
     useAgentChatStore.getState().resetForProject(null);
     vi.advanceTimersByTime(32);
     expect(useAgentChatStore.getState().tabs[0].messages).toEqual([]);

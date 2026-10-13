@@ -57,8 +57,11 @@ export interface DocCacheResult {
  * Synchronous cache lookup — returns the cached result if the PDF is already open,
  * or null on cache miss. Use this to skip the async path on file switch.
  */
-export function getCachedDocument(data: Uint8Array): DocCacheResult | null {
-  const fingerprint = computeFingerprint(data);
+export function getCachedDocument(
+  data: Uint8Array,
+  artifactId?: string,
+): DocCacheResult | null {
+  const fingerprint = artifactId ?? computeFingerprint(data);
   const cached = cache.get(fingerprint);
   if (cached) {
     cached.lastAccess = Date.now();
@@ -74,14 +77,15 @@ export function getCachedDocument(data: Uint8Array): DocCacheResult | null {
  */
 export async function getOrOpenDocument(
   data: Uint8Array,
+  artifactId?: string,
 ): Promise<DocCacheResult> {
   // Reuse synchronous lookup to avoid duplicating fingerprint + cache logic
-  const hit = getCachedDocument(data);
+  const hit = getCachedDocument(data, artifactId);
   if (hit) return hit;
 
   // Cache miss — evict if needed, then open
   await evictOldest();
-  const fingerprint = computeFingerprint(data);
+  const fingerprint = artifactId ?? computeFingerprint(data);
 
   log.debug(
     `Cache miss, opening document (${(data.byteLength / 1024).toFixed(0)} KB)`,

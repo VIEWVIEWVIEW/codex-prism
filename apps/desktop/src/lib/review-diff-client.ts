@@ -73,3 +73,38 @@ export function loadReviewDiff(
     }
   });
 }
+
+export function loadReviewBlocks(
+  before: string,
+  after: string,
+  signal: AbortSignal,
+): Promise<import("./review-diff").ReviewBlock[]> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted)
+      return reject(new DOMException("Cancelled", "AbortError"));
+    const worker = new Worker(
+      new URL("./review-diff.worker.ts", import.meta.url),
+      { type: "module" },
+    );
+    const dispose = () => {
+      worker.terminate();
+      signal.removeEventListener("abort", abort);
+    };
+    const abort = () => {
+      dispose();
+      reject(new DOMException("Cancelled", "AbortError"));
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    worker.onmessage = (event) => {
+      dispose();
+      event.data.blocks
+        ? resolve(event.data.blocks)
+        : reject(new Error(event.data.error));
+    };
+    worker.onerror = () => {
+      dispose();
+      reject(new Error("Could not compute change ranges"));
+    };
+    worker.postMessage({ before, after, blocks: true });
+  });
+}

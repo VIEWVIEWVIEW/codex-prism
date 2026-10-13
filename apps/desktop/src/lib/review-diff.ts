@@ -55,3 +55,35 @@ export function reviewDiff(before: string, after: string): ReviewDiffLine[] {
   if (chunks.length && cursor <= b.lines) rows.push({ kind: "gap", text: "…" });
   return rows;
 }
+
+export interface SourceRange {
+  start: number;
+  end: number;
+}
+export interface ReviewBlock {
+  before: SourceRange | null;
+  after: SourceRange | null;
+  context: SourceRange | null;
+}
+/** Inclusive line ranges; empty sides remain empty, never invented source lines. */
+export function reviewBlocks(before: string, after: string): ReviewBlock[] {
+  const a = Text.of(before.split("\n"));
+  const b = Text.of(after.split("\n"));
+  const precedingContext = (offset: number): SourceRange | null => {
+    if (offset <= 0) return null;
+    let line = b.lineAt(Math.min(offset - 1, b.length)).number;
+    while (line > 1 && !b.line(line).text.trim()) line--;
+    return b.line(line).text.trim() ? { start: line, end: line } : null;
+  };
+  return Chunk.build(a, b, { timeout: 100 }).map((c) => ({
+    before:
+      c.fromA < c.toA
+        ? { start: a.lineAt(c.fromA).number, end: a.lineAt(c.endA).number }
+        : null,
+    after:
+      c.fromB < c.toB
+        ? { start: b.lineAt(c.fromB).number, end: b.lineAt(c.endB).number }
+        : null,
+    context: c.fromB === c.toB ? precedingContext(c.fromB) : null,
+  }));
+}

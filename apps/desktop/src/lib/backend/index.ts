@@ -151,6 +151,7 @@ export interface PrismBackend {
       model?: string,
       effort?: string,
       images?: string[],
+      mainDocument?: string,
     ): Promise<any>;
     control(
       projectId: string,
@@ -197,7 +198,7 @@ export const backend: PrismBackend = {
     sessions: (projectId) => invoke("codex_sessions", { projectId }),
     thread: (projectId, threadId, action, title) =>
       invoke("codex_thread", { projectId, threadId, action, title }),
-    send: (projectId, threadId, prompt, model, effort, images) =>
+    send: (projectId, threadId, prompt, model, effort, images, mainDocument) =>
       invoke("codex_send", {
         projectId,
         threadId,
@@ -205,6 +206,7 @@ export const backend: PrismBackend = {
         model: model || null,
         effort: effort || null,
         images: images ?? [],
+        mainDocument: mainDocument ?? null,
       }),
     control: (projectId, threadId, turnId, prompt) =>
       invoke("codex_control", {

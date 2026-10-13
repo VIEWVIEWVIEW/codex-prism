@@ -47,13 +47,14 @@ export function ProposedChangesPanel() {
   );
 }
 
-function FileReview({
+export function FileReview({
   change,
   expanded,
   toggle,
   disabled,
   pending,
   decide,
+  showActions = true,
 }: {
   change: ReviewChange;
   expanded: boolean;
@@ -61,6 +62,7 @@ function FileReview({
   disabled: boolean;
   pending: boolean;
   decide: (path: string, undo: boolean) => Promise<void>;
+  showActions?: boolean;
 }) {
   const before = change.oldContent ?? "";
   const after = change.newContent ?? "";
@@ -103,7 +105,7 @@ function FileReview({
         type="button"
         onClick={toggle}
         aria-expanded={expanded}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-muted-foreground hover:bg-muted/40"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-muted-foreground text-xs hover:bg-muted/40"
       >
         <ChevronDownIcon
           className={cn(
@@ -118,7 +120,7 @@ function FileReview({
       </button>
       {expanded &&
         (change.binary ? (
-          <p className="px-3 py-2 text-xs text-muted-foreground">
+          <p className="px-3 py-2 text-muted-foreground text-xs">
             Binary asset {change.kind}
           </p>
         ) : (
@@ -127,6 +129,7 @@ function FileReview({
             className="overflow-auto font-mono text-xs leading-5"
             style={{ maxHeight: 240 }}
             onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+            role="region"
             aria-label={`Changes to ${change.path}`}
           >
             {error ? (
@@ -186,31 +189,34 @@ function FileReview({
             )}
           </div>
         ))}
-      <div className="sticky bottom-0 flex justify-end bg-background/95 px-3 py-1.5">
-        <div
-          className="inline-flex items-center rounded-full bg-muted p-0.5 text-xs"
-          aria-label={`Review ${change.path}`}
-        >
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => void decide(change.path, true)}
-            title={`Undo all changes to ${change.path}`}
-            className="rounded-full px-3 py-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground focus-visible:outline focus-visible:outline-ring disabled:opacity-50"
+      {showActions && (
+        <div className="sticky bottom-0 flex justify-end bg-background/95 px-3 py-1.5">
+          <div
+            className="inline-flex items-center rounded-full bg-muted p-0.5 text-xs"
+            role="group"
+            aria-label={`Review ${change.path}`}
           >
-            Undo
-          </button>
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => void decide(change.path, false)}
-            title={`Keep all changes to ${change.path}`}
-            className="rounded-full bg-green-600 px-3 py-1 font-medium text-white hover:bg-green-700 focus-visible:outline focus-visible:outline-ring disabled:opacity-50"
-          >
-            {pending ? "…" : "Keep"}
-          </button>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => void decide(change.path, true)}
+              title={`Undo all changes to ${change.path}`}
+              className="rounded-full px-3 py-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground focus-visible:outline focus-visible:outline-ring disabled:opacity-50"
+            >
+              Undo
+            </button>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => void decide(change.path, false)}
+              title={`Keep all changes to ${change.path}`}
+              className="rounded-full bg-green-600 px-3 py-1 font-medium text-white hover:bg-green-700 focus-visible:outline focus-visible:outline-ring disabled:opacity-50"
+            >
+              {pending ? "…" : "Keep"}
+            </button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

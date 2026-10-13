@@ -53,9 +53,10 @@ pub async fn codex_send(
     model: Option<String>,
     effort: Option<String>,
     images: Option<Vec<String>>,
+    main_document: Option<String>,
 ) -> Result<serde_json::Value, String> {
     backend
-        .codex_send(project_id, thread_id, prompt, model, effort, images)
+        .codex_send_with_document(project_id, thread_id, prompt, model, effort, images, main_document)
         .await
 }
 

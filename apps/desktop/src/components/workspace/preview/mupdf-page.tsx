@@ -14,6 +14,7 @@ interface MupdfPageProps {
   pageWidth: number;
   pageHeight: number;
   isVisible: boolean;
+  overlay?: React.ReactNode;
 }
 
 /** Check if a canvas appears blank (GPU context was silently invalidated).
@@ -40,6 +41,7 @@ export const MupdfPage = memo(function MupdfPage({
   pageWidth,
   pageHeight,
   isVisible,
+  overlay,
 }: MupdfPageProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [textData, setTextData] = useState<StructuredTextData | null>(null);
@@ -161,6 +163,7 @@ export const MupdfPage = memo(function MupdfPage({
         style={{ width: cssW, height: cssH, display: "block" }}
       />
 
+      {overlay}
       {/* Text layer for selection */}
       {textData && (
         <svg

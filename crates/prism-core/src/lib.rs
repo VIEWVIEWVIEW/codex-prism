@@ -8,6 +8,7 @@ mod history;
 pub mod latex;
 pub mod projects;
 mod review_storage;
+mod visual_review;
 mod services;
 pub mod skills;
 pub mod templates;

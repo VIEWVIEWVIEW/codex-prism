@@ -120,6 +120,19 @@ impl Backend {
         effort: Option<String>,
         images: Option<Vec<String>>,
     ) -> Result<serde_json::Value, String> {
+        self.codex_send_with_document(project_id, thread_id, prompt, model, effort, images, None)
+            .await
+    }
+    pub async fn codex_send_with_document(
+        &self,
+        project_id: String,
+        thread_id: Option<String>,
+        prompt: String,
+        model: Option<String>,
+        effort: Option<String>,
+        images: Option<Vec<String>>,
+        main_document: Option<String>,
+    ) -> Result<serde_json::Value, String> {
         let _operation = self.enter()?;
         codex::codex_send(
             self.clone(),
@@ -129,6 +142,7 @@ impl Backend {
             model,
             effort,
             images,
+            main_document,
         )
         .await
     }

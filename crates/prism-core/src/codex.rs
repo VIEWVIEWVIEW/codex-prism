@@ -36,6 +36,8 @@ struct Connection {
 pub struct Review {
     pub project_id: String,
     pub active: bool,
+    #[serde(default)]
+    pub visual: Option<crate::visual_review::VisualReview>,
     pub before: BTreeMap<String, Vec<u8>>,
     pub after: BTreeMap<String, Vec<u8>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -55,7 +57,7 @@ fn sessions(app: &crate::Backend) -> Result<Vec<Session>, String> {
     }
     serde_json::from_slice(&std::fs::read(p).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
 }
-fn review_path(app: &crate::Backend, id: &str) -> Result<std::path::PathBuf, String> {
+pub(crate) fn review_path(app: &crate::Backend, id: &str) -> Result<std::path::PathBuf, String> {
     uuid::Uuid::parse_str(id).map_err(|e| e.to_string())?;
     Ok(projects::data_dir(app)?.join(format!("review-{id}.json")))
 }
@@ -311,6 +313,7 @@ fn prepare_review(
     }
     Ok(Review {
         project_id: id,
+        visual: None,
         active: true,
         before,
         after: BTreeMap::new(),
@@ -335,6 +338,8 @@ fn finish_review_state(r: &mut Review, after: BTreeMap<String, Vec<u8>>) {
             *r = *previous;
             return;
         }
+        // This merged revision has no matching compiled baseline.
+        r.visual = None;
         // An interrupted, unacknowledged start may have edited files. Preserve both
         // the old pending changes and new edits for review rather than accepting them.
         for path in previous.before.keys().chain(previous.after.keys()) {
@@ -346,6 +351,10 @@ fn finish_review_state(r: &mut Review, after: BTreeMap<String, Vec<u8>>) {
                 }
             }
         }
+    }
+    if let Some(visual) = &mut r.visual {
+        visual.after = None;
+        visual.state = "preparing".into();
     }
     r.after = after;
     r.active = false;
@@ -363,7 +372,22 @@ fn finish_review(app: &crate::Backend, id: &str) -> Result<(), String> {
         return Ok(());
     }
     let after = projects::snapshot(&projects::get(app, id)?.root)?;
+    let captured = r
+        .visual
+        .as_ref()
+        .map(|v| crate::visual_review::capture(app, id, &v.main, &after));
     finish_review_state(&mut r, after);
+    if let (Some(v), Some(result)) = (&mut r.visual, captured) {
+        if v.state == "preparing" {
+            match result {
+                Ok(artifact) => v.after = Some(artifact),
+                Err(error) => {
+                    v.state = "unavailable".into();
+                    v.error = Some(error);
+                }
+            }
+        }
+    }
     let unchanged: Vec<_> = r
         .before
         .keys()
@@ -385,7 +409,31 @@ fn finish_review(app: &crate::Backend, id: &str) -> Result<(), String> {
         .lock()
         .map_err(|e| e.to_string())?
         .remove(id);
+    let has_visual = r.visual.is_some() && r.before != r.after;
+    drop(_files);
     let _ = app.emit_review(json!({"projectId":id}));
+    if has_visual {
+        schedule_visual_report(app, id, true)?;
+    }
+    Ok(())
+}
+fn schedule_visual_report(app: &crate::Backend, id: &str, rebuild: bool) -> Result<(), String> {
+    if let (Ok(runtime), Ok(admitted)) = (tokio::runtime::Handle::try_current(), app.enter()) {
+        let worker = app.clone();
+        let id = id.to_owned();
+        let task = runtime.spawn(async move {
+            let _operation = admitted;
+            if rebuild {
+                let _ =
+                    crate::visual_review::service(&worker, &id, "visual_report", json!({})).await;
+                let _ = worker.emit_review(json!({"projectId":id}));
+            }
+            let _ = crate::visual_review::cleanup(&worker, &id).await;
+        });
+        let mut tasks = app.inner.codex.tasks.lock().map_err(|e| e.to_string())?;
+        tasks.retain(|task| !task.is_finished());
+        tasks.push(task);
+    }
     Ok(())
 }
 pub(crate) async fn codex_status(app: crate::Backend) -> Result<Value, String> {
@@ -483,6 +531,7 @@ pub(crate) async fn codex_send(
     model: Option<String>,
     effort: Option<String>,
     images: Option<Vec<String>>,
+    main_document: Option<String>,
 ) -> Result<Value, String> {
     let project = projects::get(&app, &project_id)?;
     let c = connection(&app).await?;
@@ -511,6 +560,9 @@ pub(crate) async fn codex_send(
         })
         .await
         .map_err(|e| e.to_string())??;
+    }
+    if let Some(main) = main_document {
+        crate::visual_review::prepare(&app, &project_id, &main).await;
     }
     let _ = app.emit_review(json!({"projectId":project_id}));
     let result: Result<Value,String>=async{
@@ -611,6 +663,23 @@ pub(crate) fn project_resolve_review(
     if undo {
         undo_change(&root, &r, &path)?;
     }
+    if undo {
+        if let Some(v) = &mut r.visual {
+            match projects::snapshot(&root).and_then(|inputs| {
+                crate::visual_review::capture(&app, &project_id, &v.main, &inputs)
+            }) {
+                Ok(artifact) => {
+                    v.after = Some(artifact);
+                    v.state = "preparing".into();
+                }
+                Err(error) => {
+                    v.after = None;
+                    v.state = "unavailable".into();
+                    v.error = Some(error);
+                }
+            }
+        }
+    }
     r.before.remove(&path);
     r.after.remove(&path);
     if r.before == r.after {
@@ -618,7 +687,10 @@ pub(crate) fn project_resolve_review(
     } else {
         crate::review_storage::save(&file, &r)?;
     }
+    drop(_guard);
+    drop(_files);
     let _ = app.emit_review(json!({"projectId":project_id}));
+    schedule_visual_report(&app, &project_id, undo)?;
     Ok(())
 }
 pub(crate) fn recover(app: &crate::Backend) {
@@ -778,6 +850,7 @@ mod tests {
             before: before.clone(),
             after: projects::snapshot(&root).unwrap(),
             previous: None,
+            visual: None,
         };
         let file = d.path().join("review.json");
         save_json(&file, &r).unwrap();
@@ -849,6 +922,7 @@ mod tests {
             project.id.clone(),
             None,
             "running".into(),
+            None,
             None,
             None,
             None,

@@ -1,3 +1,6 @@
+import { renderedRegions } from "../visual-regions";
+import type { SourceBox, Region } from "../visual-review";
+import type { StructuredTextData } from "./types";
 import type { PDFDocument } from "mupdf";
 
 type MupdfModule = typeof import("mupdf");
@@ -46,6 +49,7 @@ methods.closeDocument = (docId: number): void => {
   const doc = documentMap.get(docId);
   if (doc) {
     documentMap.delete(docId);
+    doc.destroy();
   }
 };
 
@@ -123,15 +127,15 @@ methods.getPageText = (docId: number, pageIndex: number): unknown => {
       type: "text",
       bbox: block.bbox,
       lines: (block.lines || []).map((line: any) => {
-        let text = "";
+        let text = typeof line.text === "string" ? line.text : "";
         let font = {
-          name: "",
-          family: "",
-          size: 12,
-          weight: "normal",
-          style: "normal",
+          name: line.font?.name ?? "",
+          family: line.font?.family ?? "",
+          size: line.font?.size ?? 12,
+          weight: line.font?.weight ?? "normal",
+          style: line.font?.style ?? "normal",
         };
-        let baselineY = 0;
+        let baselineY = line.y ?? (line.bbox?.y ?? 0) + (line.bbox?.h ?? 0);
 
         const spans = line.spans || [];
         if (spans.length > 0) {
@@ -170,6 +174,8 @@ methods.getPageText = (docId: number, pageIndex: number): unknown => {
     };
   });
 
+  stext.destroy();
+  page.destroy();
   return { blocks };
 };
 
@@ -227,6 +233,43 @@ methods.renderThumbnail = (
   return png.buffer as ArrayBuffer;
 };
 
+methods.reviewRegions = (docId: number, boxes: SourceBox[]) => {
+  const pages = new Map<number, StructuredTextData>();
+  for (const page of new Set(boxes.map((b) => b.page))) {
+    if (page > 0 && page <= documentMap.get(docId)!.countPages())
+      pages.set(
+        page,
+        methods.getPageText(docId, page - 1) as StructuredTextData,
+      );
+  }
+  return renderedRegions(boxes, pages);
+};
+methods.reviewCrop = (docId: number, region: Region): ArrayBuffer => {
+  const page = documentMap.get(docId)!.loadPage(region.page - 1);
+  const scale = Math.min(
+    2,
+    560 / Math.max(1, region.w),
+    800 / Math.max(1, region.h),
+  );
+  const box: [number, number, number, number] = [
+    Math.floor((region.x - 4) * scale),
+    Math.floor((region.y - 4) * scale),
+    Math.ceil((region.x + region.w + 4) * scale),
+    Math.ceil((region.y + region.h + 4) * scale),
+  ];
+  const pixmap = new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB, box, false);
+  pixmap.clear(255);
+  const device = new mupdf.DrawDevice(mupdf.Matrix.identity, pixmap);
+  try {
+    page.run(device, mupdf.Matrix.scale(scale, scale));
+    device.close();
+    return pixmap.asPNG().slice().buffer as ArrayBuffer;
+  } finally {
+    device.destroy();
+    pixmap.destroy();
+    page.destroy();
+  }
+};
 // RPC message handler
 self.onmessage = (event: MessageEvent) => {
   const [func, id, args] = event.data as [string, number, unknown[]];

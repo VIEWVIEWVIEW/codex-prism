@@ -124,14 +124,14 @@ fn has_real_errors(log: &str) -> bool {
 }
 
 #[derive(Debug, PartialEq)]
-enum TexEngine {
+pub(crate) enum TexEngine {
     Latex,
     XeLaTeX,
     LuaLaTeX,
 }
 
 /// Detect TeX engine from `% !TEX program = <engine>` magic comment in the first 20 lines.
-fn detect_tex_engine(content: &str) -> Option<TexEngine> {
+pub(crate) fn detect_tex_engine(content: &str) -> Option<TexEngine> {
     for line in content.lines().take(20) {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix('%') {
@@ -2163,4 +2163,111 @@ mod preview_process_tests {
         assert!(result.unwrap_err().contains("shutting down"));
         assert_reaped(dir.path());
     }
+}
+
+/// Forward source index, in PDF points. Only horizontal boxes are candidates:
+/// enclosing vertical/page boxes would misleadingly highlight entire pages.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct SourceBox {
+    pub file: String,
+    pub line: u32,
+    pub page: u32,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+pub(crate) fn forward_synctex(data: &str, root: &Path) -> Vec<SourceBox> {
+    let mut inputs = HashMap::new();
+    let (mut mag, mut unit, mut xo, mut yo) = (1000.0, 1.0, 0.0, 0.0);
+    let mut page = 0;
+    let mut boxes = Vec::new();
+    let mut horizontal: Vec<Option<SourceBox>> = Vec::new();
+    for line in data.lines().map(str::trim) {
+        if let Some(rest) = line.strip_prefix("Input:") {
+            if let Some((tag, path)) = rest.split_once(':') {
+                let path = Path::new(path);
+                let absolute = if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    root.join(path)
+                };
+                // Canonicalize while the immutable build directory still exists.
+                if let (Ok(absolute), Ok(root)) = (absolute.canonicalize(), root.canonicalize()) {
+                    if let Ok(relative) = absolute.strip_prefix(root) {
+                        if let Ok(tag) = tag.parse::<u32>() {
+                            inputs.insert(tag, relative.to_string_lossy().replace('\\', "/"));
+                        }
+                    }
+                }
+            }
+        } else if let Some(v) = line.strip_prefix("Magnification:") {
+            mag = v.trim().parse().unwrap_or(1000.0);
+        } else if let Some(v) = line.strip_prefix("Unit:") {
+            unit = v.trim().parse().unwrap_or(1.0);
+        } else if let Some(v) = line.strip_prefix("X Offset:") {
+            xo = v.trim().parse().unwrap_or(0.0);
+        } else if let Some(v) = line.strip_prefix("Y Offset:") {
+            yo = v.trim().parse().unwrap_or(0.0);
+        } else if let Some(v) = line.strip_prefix('{') {
+            page = v.parse().unwrap_or(0);
+        } else if line.starts_with('}') || line.starts_with("Postamble:") {
+            page = 0;
+        } else if line.starts_with(')') {
+            horizontal.pop();
+        } else if page > 0 && line.starts_with(['x', 'g', 'k', '$']) {
+            let factor = unit * mag / (1000.0 * 65536.0) * 72.0 / 72.27;
+            if let Some(n) = parse_synctex_node(&line[1..], factor, xo * factor, yo * factor) {
+                if let (Some(file), Some(Some(parent))) = (inputs.get(&n.tag), horizontal.last()) {
+                    let mut region = parent.clone();
+                    region.file = file.clone();
+                    region.line = n.line;
+                    if !boxes.iter().any(|b: &SourceBox| {
+                        b.file == region.file
+                            && b.line == region.line
+                            && b.page == region.page
+                            && b.x == region.x
+                            && b.y == region.y
+                    }) {
+                        boxes.push(region);
+                    }
+                }
+            }
+        } else if page > 0 && (line.starts_with('(') || line.starts_with('h')) {
+            if line.starts_with('(') {
+                horizontal.push(None);
+            }
+            let factor = unit * mag / (1000.0 * 65536.0) * 72.0 / 72.27;
+            if let Some(n) = parse_synctex_node(&line[1..], factor, xo * factor, yo * factor) {
+                let dimensions: Vec<f64> = line
+                    .split(':')
+                    .nth(2)
+                    .unwrap_or("")
+                    .split(',')
+                    .filter_map(|v| v.parse::<f64>().ok())
+                    .map(|v| v * factor)
+                    .collect();
+                if let (Some(file), [w, h, d]) = (inputs.get(&n.tag), dimensions.as_slice()) {
+                    if *w > 0.0 && h + d > 0.0 {
+                        let region = SourceBox {
+                            file: file.clone(),
+                            line: n.line,
+                            page,
+                            x: n.h,
+                            y: n.v - h,
+                            w: *w,
+                            h: h + d,
+                        };
+                        if line.starts_with('(') {
+                            if let Some(parent) = horizontal.last_mut() {
+                                *parent = Some(region.clone());
+                            }
+                        }
+                        boxes.push(region);
+                    }
+                }
+            }
+        }
+    }
+    boxes
 }

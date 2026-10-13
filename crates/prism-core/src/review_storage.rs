@@ -10,6 +10,8 @@ struct StoredReview {
     format_version: u8,
     project_id: String,
     active: bool,
+    #[serde(default)]
+    visual: Option<crate::visual_review::VisualReview>,
     before: BTreeMap<String, String>,
     after: BTreeMap<String, String>,
     previous: Option<Box<StoredReview>>,
@@ -35,6 +37,7 @@ fn encode(review: &Review, dir: &Path) -> Result<StoredReview, String> {
         format_version: 1,
         project_id: review.project_id.clone(),
         active: review.active,
+        visual: review.visual.clone(),
         before: store(&review.before)?,
         after: store(&review.after)?,
         previous: review
@@ -68,6 +71,7 @@ fn decode(review: StoredReview, dir: &Path) -> Result<Review, String> {
     Ok(Review {
         project_id: review.project_id,
         active: review.active,
+        visual: review.visual.clone(),
         before: read(review.before)?,
         after: read(review.after)?,
         previous: review

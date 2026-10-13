@@ -1,7 +1,11 @@
 import { coalescedRefresh } from "@/lib/coalesced-refresh";
 import { create } from "zustand";
 import { backend, type AgentEvent, type Review } from "@/lib/backend";
-import { useDocumentStore } from "./document-store";
+import {
+  resolveTexRoot,
+  getCurrentPdfRootId,
+  useDocumentStore,
+} from "./document-store";
 export interface PromptContextOverride {
   label: string;
   filePath: string;
@@ -215,11 +219,37 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
   resolveReview: async (path, undo) => {
     const id = get().projectId;
     if (!id) return;
+    set({ error: null });
     try {
       await backend.review.resolve(id, path, undo);
       await get().refreshReview();
-      if (!get().locked) {
+      if (undo || !get().locked) {
         await useDocumentStore.getState().refreshFiles();
+      }
+      if (undo && !get().locked && get().projectId === id) {
+        const doc = useDocumentStore.getState();
+        const { compileLatex, resolveCompileTarget, formatCompileError } =
+          await import("@/lib/latex-compiler");
+        const target = resolveCompileTarget(
+          getCurrentPdfRootId() ?? doc.activeFileId,
+          doc.files,
+        );
+        if (target && doc.projectRoot) {
+          doc.setIsCompiling(true);
+          try {
+            const pdf = await compileLatex(doc.projectRoot, target.targetPath);
+            if (useDocumentStore.getState().projectId === id)
+              doc.setPdfData(pdf, target.rootId);
+          } catch (error) {
+            if (useDocumentStore.getState().projectId === id)
+              doc.setCompileError(formatCompileError(error));
+          } finally {
+            if (useDocumentStore.getState().projectId === id)
+              doc.setIsCompiling(false);
+          }
+        } else {
+          doc.setPdfData(null);
+        }
       }
     } catch (e) {
       set({ error: String(e) });
@@ -319,6 +349,13 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
         state.selectedModel,
         state.effortLevel,
         attachments.flatMap((a) => (a.imageDataUrl ? [a.imageDataUrl] : [])),
+        doc.files.find(
+          (f) =>
+            f.id ===
+            (active?.type === "tex"
+              ? resolveTexRoot(active.id, doc.files)
+              : getCurrentPdfRootId()),
+        )?.relativePath,
       );
       set((s) => ({
         tabs: s.tabs.map((x) =>

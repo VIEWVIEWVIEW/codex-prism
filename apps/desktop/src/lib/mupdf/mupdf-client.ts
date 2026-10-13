@@ -1,3 +1,4 @@
+import type { SourceBox, Region } from "../visual-review";
 import type {
   StructuredTextData,
   LinkData,
@@ -22,6 +23,8 @@ export interface MupdfClient {
     pageIndex: number,
     targetWidth: number,
   ): Promise<ArrayBuffer>;
+  reviewRegions(docId: number, boxes: SourceBox[]): Promise<Region[]>;
+  reviewCrop(docId: number, region: Region): Promise<ArrayBuffer>;
   destroy(): void;
 }
 
@@ -126,6 +129,16 @@ function createClient(): MupdfClient {
     getPageLinks: (docId, pageIndex) => call("getPageLinks", docId, pageIndex),
     renderThumbnail: (docId, pageIndex, targetWidth) =>
       call("renderThumbnail", docId, pageIndex, targetWidth),
+    reviewRegions: (docId, boxes) => call("reviewRegions", docId, boxes),
+    reviewCrop: async (docId, region) => {
+      const start = performance.now();
+      const bytes = (await call("reviewCrop", docId, region)) as ArrayBuffer;
+      log.debug("Visual crop rendered", {
+        durationMs: Math.round(performance.now() - start),
+        bytes: bytes.byteLength,
+      });
+      return bytes;
+    },
     destroy: () => worker.terminate(),
   };
 }

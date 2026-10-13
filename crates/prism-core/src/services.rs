@@ -7,6 +7,9 @@ pub(crate) async fn project_service(
     operation: String,
     args: Value,
 ) -> Result<Value, String> {
+    if operation.starts_with("visual_") {
+        return crate::visual_review::service(&app, &project_id, &operation, args).await;
+    }
     let state = &app.inner.codex;
     let _services = state.service_lock.lock().await;
     let project = projects::get(&app, &project_id)?;

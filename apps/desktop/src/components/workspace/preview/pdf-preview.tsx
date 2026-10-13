@@ -1,3 +1,5 @@
+import { useVisualReview } from "@/hooks/use-visual-review";
+import { VisualReviewPanel } from "./visual-review-panel";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { getPdfArrayBuffer } from "@/lib/mupdf/pdf-data";
 import {
@@ -164,6 +166,45 @@ export function PdfPreview() {
     activeFile?.type === "tex"
       ? resolveTexRoot(activeFile.id, files)
       : (getCurrentPdfRootId() ?? resolveTexRoot(activeFile?.id ?? "", files));
+  const visual = useVisualReview(
+    files.find((f) => f.id === currentRootFileId)?.relativePath,
+  );
+  const [reviewPanelOpen, setReviewPanelOpen] = useState(true);
+  const selectChange = (id: string) => {
+    visual.setSelected(id);
+    setReviewPanelOpen(true);
+    const item = visual.items.find((c) => c.id === id);
+    if (item?.after[0]) scrollToPageRef.current?.(item.after[0].page);
+  };
+  const changeOverlay = (page: number) => (
+    <div className="pointer-events-none absolute inset-0 z-10">
+      {visual.items.flatMap((item, index) =>
+        item.after
+          .filter((r) => r.page === page)
+          .map((r, i) => (
+            <div
+              key={`${item.id}:${i}`}
+              className={`absolute border ${visual.selected === item.id ? "border-amber-600 bg-amber-300/30" : "border-amber-400 bg-amber-200/20"}`}
+              style={{
+                left: r.x * scale,
+                top: r.y * scale,
+                width: r.w * scale,
+                height: r.h * scale,
+              }}
+            >
+              <button
+                aria-label={`Change ${index + 1}: ${item.label}`}
+                aria-pressed={visual.selected === item.id}
+                onClick={() => selectChange(item.id)}
+                className="pointer-events-auto absolute top-0 -left-5 rounded bg-amber-200 px-1 text-black text-xs"
+              >
+                {index + 1}
+              </button>
+            </div>
+          )),
+      )}
+    </div>
+  );
   const [aliveOrder, setAliveOrder] = useState<string[]>([]);
   const prevRootRef = useRef(currentRootFileId);
 
@@ -187,13 +228,13 @@ export function PdfPreview() {
 
   // Update alive set when active root changes and has PDF data
   useEffect(() => {
-    if (!currentRootFileId || !pdfData) return;
+    if (!currentRootFileId || (!pdfData && !visual.active)) return;
     setAliveOrder((prev) => {
       if (prev[0] === currentRootFileId) return prev; // already at front
       const without = prev.filter((id) => id !== currentRootFileId);
       return [currentRootFileId, ...without].slice(0, MAX_ALIVE_VIEWERS);
     });
-  }, [currentRootFileId, pdfData]);
+  }, [currentRootFileId, pdfData, visual.active]);
 
   // PDF text selection toolbar
   const [pdfSelection, setPdfSelection] = useState<PdfTextSelection | null>(
@@ -507,7 +548,10 @@ export function PdfPreview() {
     const currentPdf = getCurrentPdfBytes();
     if (!currentPdf) return;
     const projectName =
-      projectRoot?.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "document";
+      projectRoot
+        ?.replace(/[\\/]+$/, "")
+        .split(/[\\/]/)
+        .pop() || "document";
     const now = new Date();
     const timestamp = [
       now.getFullYear(),
@@ -680,7 +724,7 @@ export function PdfPreview() {
   }, [pdfData]);
 
   const renderContent = () => {
-    if (compileError) {
+    if (compileError && !visual.active) {
       const errors = [
         ...new Set(
           compileError
@@ -739,7 +783,7 @@ export function PdfPreview() {
         </div>
       );
     }
-    if (!pdfData) {
+    if (!pdfData && !visual.active) {
       return (
         <div className="flex flex-1 flex-col items-center justify-center bg-muted/30 p-8">
           <FileTextIcon className="mb-4 size-16 text-muted-foreground/50" />
@@ -783,7 +827,11 @@ export function PdfPreview() {
     return (
       <div className="relative flex min-h-0 flex-1">
         {aliveOrder.map((rootId) => {
-          const data = getPdfBytes(rootId);
+          const data =
+            getPdfBytes(rootId) ??
+            (rootId === currentRootFileId && visual.active
+              ? new Uint8Array(visual.bytes.current!)
+              : null);
           if (!data) return null;
           const isActive = rootId === currentRootFileId;
           return (
@@ -815,7 +863,45 @@ export function PdfPreview() {
                 }
               >
                 <PdfViewer
-                  data={getPdfArrayBuffer(data)}
+                  data={
+                    isActive && visual.active
+                      ? visual.bytes.current!
+                      : getPdfArrayBuffer(data)
+                  }
+                  selectedRegion={
+                    isActive && visual.active
+                      ? visual.items.find((c) => c.id === visual.selected)
+                          ?.after[0]
+                      : undefined
+                  }
+                  onPageClick={
+                    isActive && visual.active
+                      ? (page, x, y) => {
+                          const item = visual.items.find((c) =>
+                            c.after.some(
+                              (r) =>
+                                r.page === page &&
+                                x >= r.x &&
+                                x <= r.x + r.w &&
+                                y >= r.y &&
+                                y <= r.y + r.h,
+                            ),
+                          );
+                          if (item) {
+                            visual.setSelected(item.id);
+                            setReviewPanelOpen(true);
+                          }
+                        }
+                      : undefined
+                  }
+                  artifactId={
+                    isActive && visual.active
+                      ? visual.metadata.after
+                      : undefined
+                  }
+                  renderOverlay={
+                    isActive && visual.active ? changeOverlay : undefined
+                  }
                   scale={scale}
                   rootFileId={rootId}
                   isActive={isActive}
@@ -863,7 +949,7 @@ export function PdfPreview() {
       <div className="flex h-[calc(var(--workspace-topbar-height)+var(--titlebar-height))] shrink-0 flex-nowrap items-center border-border border-b bg-background px-2">
         <div className="flex min-w-0 shrink-0 items-center gap-1">
           <span
-            className="px-2 text-xs text-muted-foreground"
+            className="px-2 text-muted-foreground text-xs"
             title={`TeX Live: ${engine}. Set % !TEX program = pdflatex, xelatex or lualatex in the main document to choose an engine.${texliveStatus && !texliveStatus.engines.includes(engine) ? ` ${engine} is not installed. Install TeX Live to compile; existing PDFs remain available.` : ""}`}
           >
             {engine}
@@ -934,6 +1020,57 @@ export function PdfPreview() {
             Auto
           </Button>
         </div>
+        {visual.metadata.state === "ready" &&
+          visual.metadata.main ===
+            files.find((f) => f.id === currentRootFileId)?.relativePath && (
+            <div className="flex items-center gap-1 text-xs">
+              <button
+                aria-pressed={visual.shown}
+                onClick={() => visual.setShown(!visual.shown)}
+              >
+                Show changes ({visual.items.length})
+              </button>
+              {visual.shown && (
+                <button
+                  aria-expanded={reviewPanelOpen}
+                  onClick={() => setReviewPanelOpen(!reviewPanelOpen)}
+                >
+                  Review panel
+                </button>
+              )}
+              <button
+                aria-label="Previous change"
+                disabled={!visual.items.length}
+                onClick={() => {
+                  visual.setShown(true);
+                  const i = visual.items.findIndex(
+                    (c) => c.id === visual.selected,
+                  );
+                  selectChange(
+                    visual.items[
+                      ((i < 0 ? 0 : i) - 1 + visual.items.length) %
+                        visual.items.length
+                    ].id,
+                  );
+                }}
+              >
+                ↑
+              </button>
+              <button
+                aria-label="Next change"
+                disabled={!visual.items.length}
+                onClick={() => {
+                  visual.setShown(true);
+                  const i = visual.items.findIndex(
+                    (c) => c.id === visual.selected,
+                  );
+                  selectChange(visual.items[(i + 1) % visual.items.length].id);
+                }}
+              >
+                ↓
+              </button>
+            </div>
+          )}
         <div data-tauri-drag-region className="min-w-2 flex-1 self-stretch" />
         <div className="ml-auto flex min-w-0 shrink-0 flex-nowrap items-center justify-end gap-1">
           {pdfData && (
@@ -1093,7 +1230,35 @@ export function PdfPreview() {
           </Popover>
         </div>
       </div>
-      {renderContent()}
+      {visual.metadata.state === "preparing" && (
+        <p className="px-3 text-xs" role="status">
+          Preparing visual changes…
+        </p>
+      )}
+      {visual.metadata.error && (
+        <p className="px-3 text-xs" role="status">
+          {visual.metadata.error}
+          <br />
+          {visual.metadata.state === "stale"
+            ? "Visual changes unavailable because project files changed."
+            : !visual.metadata.before
+              ? "Visual changes unavailable for this turn: no successful baseline."
+              : "Visual changes unavailable until compilation succeeds."}
+        </p>
+      )}
+      <div className="relative flex min-h-0 flex-1">
+        {renderContent()}
+        {visual.active && reviewPanelOpen && visual.docs.current && (
+          <aside className="@[900px]/pv:static absolute inset-y-0 right-0 z-20 w-[300px] max-w-full @[900px]/pv:shrink-0 border-l bg-background">
+            <VisualReviewPanel
+              items={visual.items}
+              selected={visual.selected}
+              onSelect={selectChange}
+              docs={visual.docs.current}
+            />
+          </aside>
+        )}
+      </div>
       {/* PDF selection toolbar */}
       {pdfToolbarPosition && pdfSelection && (
         <SelectionToolbar
