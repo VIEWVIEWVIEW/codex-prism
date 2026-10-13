@@ -94,6 +94,8 @@ export function EditorToolbar({
 }: EditorToolbarProps) {
   const vimMode = useSettingsStore((s) => s.vimMode);
   const setVimMode = useSettingsStore((s) => s.setVimMode);
+  const editorFontSize = useSettingsStore((s) => s.editorFontSize);
+  const setEditorFontSize = useSettingsStore((s) => s.setEditorFontSize);
 
   const fileName = useDocumentStore((s) => {
     const activeFile = s.files.find((f) => f.id === s.activeFileId);
@@ -336,6 +338,26 @@ export function EditorToolbar({
       >
         VIM
       </Button>
+      <Select
+        value={String(editorFontSize)}
+        onValueChange={(value) => setEditorFontSize(Number(value))}
+      >
+        <SelectTrigger
+          size="sm"
+          className="h-6! w-auto shrink-0 text-xs"
+          aria-label="Editor font size"
+          title="Editor font size"
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {Array.from({ length: 23 }, (_, i) => i + 10).map((size) => (
+            <SelectItem key={size} value={String(size)}>
+              {size} px
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
       <div data-tauri-drag-region className="flex-1 self-stretch" />
       {editors.length === 1 && (
         <TooltipIconButton

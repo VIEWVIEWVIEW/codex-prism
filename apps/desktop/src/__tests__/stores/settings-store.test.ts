@@ -18,6 +18,19 @@ for (const compilerBackend of ["tectonic", "texlive"]) {
     expect(useSettingsStore.getState()).not.toHaveProperty("compilerBackend");
     const saved = JSON.parse(localStorage.getItem("codex-prism-settings")!);
     expect(saved.version).toBe(1);
-    expect(saved.state).toEqual({ autoRecompile: true, vimMode: true });
+    expect(saved.state).toEqual({
+      autoRecompile: true,
+      vimMode: true,
+      editorFontSize: 14,
+    });
   });
 }
+
+it("restores the editor font size from saved preferences", async () => {
+  useSettingsStore.getState().setEditorFontSize(20);
+  const saved = localStorage.getItem("codex-prism-settings")!;
+  useSettingsStore.setState({ editorFontSize: 14 });
+  localStorage.setItem("codex-prism-settings", saved);
+  await useSettingsStore.persist.rehydrate();
+  expect(useSettingsStore.getState().editorFontSize).toBe(20);
+});

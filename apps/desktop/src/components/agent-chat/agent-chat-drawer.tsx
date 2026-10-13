@@ -49,6 +49,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { isImageUpload } from "@/lib/project-images";
 
 export function AgentChatDrawer({
   fillHeight = false,
@@ -192,12 +193,17 @@ export function AgentChatDrawer({
       if (!selected) return;
       if (useDocumentStore.getState().projectRoot !== root)
         throw new Error("The project changed. Please choose the files again.");
-      const paths = await useDocumentStore
-        .getState()
-        .importFiles(
-          Array.isArray(selected) ? selected : [selected],
+      const sources = Array.isArray(selected) ? selected : [selected];
+      const doc = useDocumentStore.getState();
+      const paths = await doc.importFiles(sources.filter(isImageUpload));
+      if (useDocumentStore.getState().projectRoot !== root)
+        throw new Error("The project changed. Please choose the files again.");
+      paths.push(
+        ...(await doc.importFiles(
+          sources.filter((path) => !isImageUpload(path)),
           "attachments",
-        );
+        )),
+      );
       if (useDocumentStore.getState().projectRoot === root)
         paths.forEach(attach);
     } catch (e) {
@@ -558,7 +564,8 @@ export function AgentChatDrawer({
                       Upload from computer
                     </Button>
                     <p className="px-3 pb-2 text-[11px] text-muted-foreground">
-                      Files are copied into project attachments.
+                      Files are copied into the project; images use its image
+                      folder.
                     </p>
                     <div className="border-t pt-2">
                       <div className="mb-2 flex items-center gap-2 rounded-md border px-2">

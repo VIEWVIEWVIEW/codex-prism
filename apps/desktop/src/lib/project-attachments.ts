@@ -1,4 +1,5 @@
-import { copyFileToProject } from "@/lib/tauri/fs";
+import { copyFileToProject, scanProjectFolder } from "@/lib/tauri/fs";
+import { isImageUpload, projectImageFolder } from "./project-images";
 
 export interface ImportedReferenceFile {
   relativePath: string;
@@ -18,9 +19,19 @@ export async function importReferenceFiles(
   targetFolder = "attachments",
 ): Promise<ImportedReferenceFile[]> {
   const imported: ImportedReferenceFile[] = [];
+  const scan = sourcePaths.some(isImageUpload)
+    ? await scanProjectFolder(projectRoot)
+    : null;
+  const imageFolder = scan
+    ? projectImageFolder(
+        scan.folders,
+        scan.files.map((file) => file.relativePath),
+      )
+    : "prism-uploads";
 
   for (const sourcePath of sourcePaths) {
-    const targetName = `${targetFolder}/${baseName(sourcePath)}`;
+    const folder = isImageUpload(sourcePath) ? imageFolder : targetFolder;
+    const targetName = `${folder}/${baseName(sourcePath)}`;
     const relativePath = await copyFileToProject(
       projectRoot,
       sourcePath,

@@ -174,12 +174,14 @@ export function LatexEditor() {
 
   const { resolvedTheme } = useTheme();
   const vimMode = useSettingsStore((s) => s.vimMode);
+  const editorFontSize = useSettingsStore((s) => s.editorFontSize);
 
   const compileRef = useRef<() => void>(() => {});
   const isSearchOpenRef = useRef(false);
   const themeCompartmentRef = useRef(new Compartment());
   const mergeCompartmentRef = useRef(new Compartment());
   const vimCompartmentRef = useRef(new Compartment());
+  const fontSizeCompartmentRef = useRef(new Compartment());
   const isMergeActiveRef = useRef(false);
   const pendingChangeRef = useRef<ProposedChange | null>(null);
   const handleKeepAllRef = useRef<() => void>(() => {});
@@ -696,13 +698,15 @@ export function LatexEditor() {
         highlightSelectionMatches(),
         mergeCompartmentRef.current.of([]),
         vimCompartmentRef.current.of([]),
+        fontSizeCompartmentRef.current.of(
+          EditorView.theme({ "&": { fontSize: `${editorFontSize}px` } }),
+        ),
         updateListener,
         EditorView.lineWrapping,
         scrollPastEnd(),
         EditorView.theme({
           "&": {
             height: "100%",
-            fontSize: "14px",
             color: "var(--foreground)",
             backgroundColor: "var(--background)",
             WebkitBackfaceVisibility: "hidden",
@@ -833,6 +837,17 @@ export function LatexEditor() {
     setCursorPosition,
     setSelectionRange,
   ]);
+
+  // Reconfigure in place so resizing preserves the document and undo history.
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({
+      effects: fontSizeCompartmentRef.current.reconfigure(
+        EditorView.theme({ "&": { fontSize: `${editorFontSize}px` } }),
+      ),
+    });
+  }, [editorFontSize, activeFileId, isTextFile]);
 
   // Dynamically switch editor theme when resolvedTheme changes
   useEffect(() => {

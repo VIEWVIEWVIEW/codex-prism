@@ -1,4 +1,5 @@
 import { coalescedRefresh } from "@/lib/coalesced-refresh";
+import { isImageUpload, projectImageFolder } from "@/lib/project-images";
 import { create } from "zustand";
 import { invoke, backend, type FileRef } from "@/lib/backend";
 import {
@@ -957,17 +958,26 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
   },
 
   importFiles: async (sourcePaths, targetFolder) => {
+    if (!sourcePaths.length) return [];
     if (useAgentChatStore.getState().locked) return [];
     const state = get();
     if (!state.projectRoot) return [];
 
     const importedPaths: string[] = [];
     for (const sourcePath of sourcePaths) {
+      if (get().projectRoot !== state.projectRoot)
+        throw new Error("The project changed. Please choose the files again.");
       // Handle both Unix (/) and Windows (\) path separators
       const fileName = sourcePath.split(/[/\\]/).pop() || sourcePath;
-      const targetName = targetFolder
-        ? `${targetFolder}/${fileName}`
-        : fileName;
+      const folder =
+        targetFolder ??
+        (isImageUpload(sourcePath)
+          ? projectImageFolder(
+              state.folders,
+              state.files.map((f) => f.relativePath),
+            )
+          : undefined);
+      const targetName = folder ? `${folder}/${fileName}` : fileName;
       // copyFileToProject returns the actual (possibly deduplicated) relative path
       const actualName = await copyFileToProject(
         state.projectRoot,
