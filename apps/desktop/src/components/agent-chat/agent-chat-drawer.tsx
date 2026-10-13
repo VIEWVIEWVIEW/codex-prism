@@ -97,6 +97,18 @@ export function AgentChatDrawer({
   const viewport = useRef<HTMLDivElement>(null);
   const followMessages = useRef(true);
   const input = useRef<HTMLTextAreaElement>(null);
+  const composer = useRef<HTMLDivElement>(null);
+  const [inputHeight, setInputHeight] = useState<number | null>(null);
+  const resizeStart = useRef<{ y: number; height: number } | null>(null);
+  const resizeInput = (height: number) => {
+    const el = composer.current;
+    const field = input.current;
+    if (!el || !field) return;
+    const available =
+      (el.parentElement?.clientHeight ?? 0) * 0.7 -
+      (el.offsetHeight - field.offsetHeight);
+    setInputHeight(Math.max(56, Math.min(height, Math.max(56, available))));
+  };
   const files = useDocumentStore((d) => d.files);
   const t = s.tabs.find((t) => t.id === s.activeTabId)!;
   const reportError = (e: unknown) =>
@@ -130,10 +142,14 @@ export function AgentChatDrawer({
   }, [s.projectId, s.isStreaming]);
   useEffect(() => {
     if (input.current) {
-      input.current.style.height = "auto";
-      input.current.style.height = `${Math.min(input.current.scrollHeight, 128)}px`;
+      if (inputHeight !== null) {
+        input.current.style.height = `${inputHeight}px`;
+      } else {
+        input.current.style.height = "auto";
+        input.current.style.height = `${Math.min(input.current.scrollHeight, 128)}px`;
+      }
     }
-  }, [t.draft, open]);
+  }, [t.draft, open, inputHeight]);
   const model =
     setup.models.find((m) => m.model === s.selectedModel) ||
     setup.models.find((m) => m.isDefault);
@@ -410,7 +426,53 @@ export function AgentChatDrawer({
               {s.error || t.error}
             </p>
           )}
-          <div className="max-h-[70%] shrink-0 overflow-auto px-3 pb-3 pt-1">
+          <div
+            ref={composer}
+            className="max-h-[70%] shrink-0 overflow-auto px-3 pb-3 pt-1"
+          >
+            <button
+              type="button"
+              aria-label="Resize message input"
+              title="Drag up to enlarge; use arrow keys to resize. Double-click to reset."
+              className="group flex h-3 w-full touch-none cursor-ns-resize items-center justify-center rounded focus-visible:outline-2 focus-visible:outline-ring"
+              onPointerDown={(e) => {
+                if (e.button !== 0) return;
+                e.preventDefault();
+                e.currentTarget.focus();
+                e.currentTarget.setPointerCapture(e.pointerId);
+                resizeStart.current = {
+                  y: e.clientY,
+                  height: input.current?.offsetHeight ?? 56,
+                };
+              }}
+              onPointerMove={(e) => {
+                const start = resizeStart.current;
+                if (start) resizeInput(start.height + start.y - e.clientY);
+              }}
+              onPointerUp={(e) => {
+                resizeStart.current = null;
+                if (e.currentTarget.hasPointerCapture(e.pointerId))
+                  e.currentTarget.releasePointerCapture(e.pointerId);
+              }}
+              onLostPointerCapture={() => {
+                resizeStart.current = null;
+              }}
+              onPointerCancel={() => {
+                resizeStart.current = null;
+              }}
+              onDoubleClick={() => setInputHeight(null)}
+              onKeyDown={(e) => {
+                if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+                  e.preventDefault();
+                  resizeInput(
+                    (input.current?.offsetHeight ?? 56) +
+                      (e.key === "ArrowUp" ? 24 : -24),
+                  );
+                }
+              }}
+            >
+              <span className="h-1 w-8 rounded-full bg-border group-hover:bg-muted-foreground/60" />
+            </button>
             <div className="rounded-2xl border border-input bg-muted/20 p-2 shadow-xs transition-shadow focus-within:border-ring/50 focus-within:ring-2 focus-within:ring-ring/10">
               {s.pendingAttachments.length > 0 && (
                 <div className="flex max-h-24 flex-wrap gap-1.5 overflow-auto px-1 pb-2">
@@ -448,7 +510,7 @@ export function AgentChatDrawer({
                 ref={input}
                 rows={2}
                 aria-label="Message Codex"
-                className="block max-h-32 min-h-14 w-full resize-none border-0 bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70"
+                className="block min-h-14 w-full resize-none border-0 bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70"
                 placeholder={
                   t.isStreaming
                     ? "Guide the current turn…"

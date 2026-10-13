@@ -107,7 +107,7 @@ export function PdfPreview() {
   const autoRecompile = useSettingsStore((s) => s.autoRecompile);
   const setAutoRecompile = useSettingsStore((s) => s.setAutoRecompile);
   const contentGeneration = useDocumentStore((s) => s.contentGeneration);
-  const agentLocked = useAgentChatStore((s) => s.locked);
+  const agentActive = useAgentChatStore((s) => s.review.active);
   const pdfRevision = useDocumentStore((s) => s.pdfRevision);
   const compileError = useDocumentStore((s) => s.compileError);
   const isCompiling = useDocumentStore((s) => s.isCompiling);
@@ -676,7 +676,7 @@ export function PdfPreview() {
       ? JSON.stringify([projectRoot, currentRootFileId])
       : null,
     generation: contentGeneration,
-    busy: isCompiling || agentLocked || !initialized,
+    busy: isCompiling || agentActive || !initialized,
     compile: () => handleCompile(true, true),
   });
 

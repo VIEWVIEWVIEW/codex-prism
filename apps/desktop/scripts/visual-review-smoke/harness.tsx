@@ -5,13 +5,16 @@ import { PdfPreview } from "../../src/components/workspace/preview/pdf-preview";
 import { useDocumentStore } from "../../src/stores/document-store";
 import { useAgentChatStore } from "../../src/stores/agent-chat-store";
 import { useSettingsStore } from "../../src/stores/settings-store";
-const call = async (command: string, args = {}) => {
+let completedCompiles = 0;
+const call = async (command: string, args: Record<string, unknown> = {}) => {
   const response = await fetch("http://127.0.0.1:19371", {
     method: "POST",
     body: JSON.stringify({ command, args }),
   });
   const result = await response.json();
   if (result.error) throw new Error(result.error);
+  if (command === "project_service" && args.operation === "compile_latex")
+    completedCompiles++;
   return result.value;
 };
 (window as any).__TAURI_INTERNALS__ = {
@@ -40,14 +43,21 @@ useAgentChatStore.setState({
   projectId: project.id,
   review: { active: false, changes: [] },
 });
-useSettingsStore.setState({ autoRecompile: false });
+useSettingsStore.setState({ autoRecompile: true });
 (window as any).smoke = {
   call,
   compiling: () => useDocumentStore.getState().isCompiling,
+  autoCompiledPendingReview: () =>
+    completedCompiles > 0 &&
+    !useDocumentStore.getState().isCompiling &&
+    useAgentChatStore.getState().locked &&
+    !useAgentChatStore.getState().review.active,
   async edit() {
+    completedCompiles = 0;
     await call("edit");
     await new Promise((r) => setTimeout(r, 200));
     await useAgentChatStore.getState().refreshReview();
+    await useDocumentStore.getState().refreshFiles();
   },
   async read() {
     return call("project_read", { path: "main.tex" });

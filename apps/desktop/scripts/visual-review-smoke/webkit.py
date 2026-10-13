@@ -35,10 +35,10 @@ def tick():
   def report(value):
    global stage
    data=json.loads(value)
-   if data['ready']:
+   if data['ready'] and data['autoCompiled']:
     assert 'Original passage' in data['text'] and 'Updated passage' in data['text'],data
-    print('report ready, PDF excerpts and highlights present',flush=True);stage=3
-  evaluate("({ready:!!document.querySelector('[aria-label=\"Visual changes\"] article')&&!!document.querySelector('[aria-label^=\"Change 1:\"]'),text:document.body.innerText,error:window.smokeError})",report)
+    print('report ready, PDF excerpts and highlights present; Auto compiled pending agent edits',flush=True);stage=3
+  evaluate("({ready:!!document.querySelector('[aria-label=\"Visual changes\"] article')&&!!document.querySelector('[aria-label^=\"Change 1:\"]'),autoCompiled:window.smoke.autoCompiledPendingReview(),text:document.body.innerText,error:window.smokeError})",report)
  elif stage==3:
   evaluate("Array.from(document.querySelectorAll('button')).find(b=>b.textContent.includes('Show rendered crops')).click();true",lambda v:None);stage=4
  elif stage==4:
