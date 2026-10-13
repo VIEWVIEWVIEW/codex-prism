@@ -39,6 +39,21 @@ export async function invoke<T>(
   return nativeInvoke<T>(command, args);
 }
 import { listen } from "@tauri-apps/api/event";
+import type { TemplateCategory } from "@/lib/template-registry";
+export interface PrivateTemplateSummary {
+  id: string;
+  name: string;
+  description: string;
+  category: TemplateCategory;
+  tags: string[];
+  mainFile: string;
+  revision: string;
+}
+export interface TemplateLibrary {
+  root: string;
+  templates: PrivateTemplateSummary[];
+  issues: { folder: string; message: string }[];
+}
 export interface Project {
   id: string;
   root: string;
@@ -87,15 +102,22 @@ export interface AgentEvent {
   params: any;
 }
 export interface PrismBackend {
+  templates: {
+    list(): Promise<TemplateLibrary>;
+    preview(id: string, revision: string, retry?: boolean): Promise<number[]>;
+    createProject(
+      id: string,
+      revision: string,
+      destination: string,
+    ): Promise<{ project: Project; mainFile: string }>;
+  };
   projects: {
     rename(projectId: string, name: string): Promise<Project>;
     register(root: string): Promise<Project>;
     relocate(projectId: string, root: string): Promise<Project>;
   };
   files: {
-    list(
-      projectId: string,
-    ): Promise<{
+    list(projectId: string): Promise<{
       files: { path: string; size: number; changeToken?: string }[];
       folders: string[];
     }>;
@@ -146,6 +168,13 @@ export interface PrismBackend {
   };
 }
 export const backend: PrismBackend = {
+  templates: {
+    list: () => invoke("template_list"),
+    preview: (id, revision, retry = false) =>
+      invoke("template_preview", { id, revision, retry }),
+    createProject: (id, revision, destination) =>
+      invoke("template_create_project", { id, revision, destination }),
+  },
   projects: {
     rename: (projectId, name) => invoke("project_rename", { projectId, name }),
     register: (root) => invoke("project_register", { root }),

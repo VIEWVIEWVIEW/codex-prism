@@ -34,12 +34,10 @@ import { useTemplateStore } from "@/stores/template-store";
 import { useProjectStore } from "@/stores/project-store";
 import { useDocumentStore } from "@/stores/document-store";
 import { useAgentChatStore } from "@/stores/agent-chat-store";
-import {
-  getTemplateById,
-  getTemplateSkeleton,
-  BIB_TEMPLATE,
-} from "@/lib/template-registry";
-import { getTemplatePdfUrl } from "@/lib/template-preview-cache";
+import { backend } from "@/lib/backend";
+import { templateInitialInstructions } from "@/lib/template-catalog";
+import { getTemplateSkeleton, BIB_TEMPLATE } from "@/lib/template-registry";
+import { getTemplatePdfBuffer } from "@/lib/template-preview-cache";
 import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
 import { exists, join } from "@/lib/tauri/fs";
 import type { PageSize } from "@/lib/mupdf/types";
@@ -61,9 +59,9 @@ type ModalStep = "preview" | "details";
 export function TemplatePreview() {
   const previewTemplateId = useTemplateStore((s) => s.previewTemplateId);
   const closePreview = useTemplateStore((s) => s.closePreview);
-  const template = previewTemplateId
-    ? getTemplateById(previewTemplateId)
-    : null;
+  const template = useTemplateStore((s) =>
+    s.templates.find((t) => t.id === s.previewTemplateId),
+  );
 
   const [modalStep, setModalStep] = useState<ModalStep>("preview");
 
@@ -73,6 +71,9 @@ export function TemplatePreview() {
   const [isLandscape, setIsLandscape] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
+  const [previewError, setPreviewError] = useState("");
+  const [retryCount, setRetryCount] = useState(0);
+  const consumedRetry = useRef(0);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const docIdRef = useRef(0);
@@ -160,9 +161,11 @@ export function TemplatePreview() {
 
   // ── PDF loading ──
   useEffect(() => {
-    if (!previewTemplateId) return;
+    if (!template) return;
 
     const gen = ++loadGenRef.current;
+    const retry = retryCount !== consumedRetry.current;
+    consumedRetry.current = retryCount;
     setLoading(true);
     setError(false);
     setNumPages(0);
@@ -170,10 +173,7 @@ export function TemplatePreview() {
 
     (async () => {
       try {
-        const url = getTemplatePdfUrl(previewTemplateId);
-        const response = await fetch(url);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const buffer = await response.arrayBuffer();
+        const buffer = await getTemplatePdfBuffer(template, true, retry);
         if (gen !== loadGenRef.current) return;
 
         const client = getMupdfClient();
@@ -208,11 +208,21 @@ export function TemplatePreview() {
       } catch (err) {
         if (gen !== loadGenRef.current) return;
         log.warn("load error", { error: String(err) });
+        setPreviewError(String(err));
         setLoading(false);
         setError(true);
       }
     })();
-  }, [previewTemplateId]);
+    return () => {
+      ++loadGenRef.current;
+      if (docIdRef.current > 0) {
+        void getMupdfClient()
+          .closeDocument(docIdRef.current)
+          .catch(() => {});
+        docIdRef.current = 0;
+      }
+    };
+  }, [template, retryCount]);
 
   // ── Render current page ──
   useEffect(() => {
@@ -246,9 +256,12 @@ export function TemplatePreview() {
     const dpi = (displayW / size.width) * 72 * dpr;
 
     const client = getMupdfClient();
+    const gen = loadGenRef.current;
+    let cancelled = false;
     client
       .drawPage(docIdRef.current, pageIndex, dpi)
       .then((imageData) => {
+        if (cancelled || gen !== loadGenRef.current) return;
         const canvas = canvasRef.current;
         if (!canvas) return;
         canvas.width = imageData.width;
@@ -261,6 +274,9 @@ export function TemplatePreview() {
       .catch((err) => {
         log.warn("render error", { error: String(err) });
       });
+    return () => {
+      cancelled = true;
+    };
   }, [currentPage, numPages, isLandscape]);
 
   // ── Page navigation ──
@@ -374,22 +390,28 @@ export function TemplatePreview() {
         setProjectNameError("A folder with this name already exists here");
         return;
       }
-      await mkdir(projectPath, { recursive: true });
-      await writeTextFile(await join(projectPath, "AGENTS.md"), DEFAULT_AGENTS_MD);
-
-      const mainTexPath = await join(projectPath, template.mainFileName);
-      const mainExists = await exists(mainTexPath);
-      if (!mainExists) {
-        await writeTextFile(mainTexPath, getTemplateSkeleton(template));
-      }
-
-      if (template.hasBibliography) {
-        const bibPath = await join(projectPath, "references.bib");
-        const bibExists = await exists(bibPath);
-        if (!bibExists) {
-          await writeTextFile(bibPath, BIB_TEMPLATE);
+      if (template.source === "private") {
+        await backend.templates.createProject(
+          template.id,
+          template.revision,
+          projectPath,
+        );
+      } else {
+        await mkdir(projectPath, { recursive: true });
+        await writeTextFile(
+          await join(projectPath, template.mainFileName),
+          getTemplateSkeleton(template),
+        );
+        if (template.hasBibliography) {
+          await writeTextFile(
+            await join(projectPath, "references.bib"),
+            BIB_TEMPLATE,
+          );
         }
       }
+      const agentsPath = await join(projectPath, "AGENTS.md");
+      if (!(await exists(agentsPath)))
+        await writeTextFile(agentsPath, DEFAULT_AGENTS_MD);
 
       const referenceFiles =
         attachments.length > 0
@@ -398,6 +420,7 @@ export function TemplatePreview() {
 
       if (purpose.trim()) {
         const attachmentSection = buildReferenceFilesSection(referenceFiles);
+        const guidance = templateInitialInstructions(template);
 
         const prompt = [
           `## New ${template.name} Project`,
@@ -405,7 +428,7 @@ export function TemplatePreview() {
           `**Template:** \`${template.documentClass}\`  `,
           `**File:** \`${template.mainFileName}\``,
           "",
-          `> The file currently contains only the LaTeX preamble (packages, styling, custom commands) with an empty document body.`,
+          guidance.context,
           "",
           `### What I want to create`,
           "",
@@ -413,7 +436,7 @@ export function TemplatePreview() {
           attachmentSection,
           `### Instructions`,
           "",
-          `Please generate the full document content based on my description. Keep the existing preamble and fill in the document body (between \`\\begin{document}\` and \`\\end{document}\`) with appropriate title, author, sections, and content. Make it a complete, well-structured **${template.name.toLowerCase()}** ready for me to refine.`,
+          guidance.instructions,
         ].join("\n");
 
         useAgentChatStore.getState().newSession();
@@ -422,7 +445,7 @@ export function TemplatePreview() {
 
       setLastProjectFolder(projectFolder);
       addRecentProject(projectPath);
-      await openProject(projectPath);
+      await openProject(projectPath, template.mainFileName);
 
       // Close modal on success
       closePreview();
@@ -491,15 +514,35 @@ export function TemplatePreview() {
                   {loading && (
                     <div className="flex flex-col items-center gap-2 text-muted-foreground">
                       <LoaderIcon className="size-5 animate-spin" />
-                      <span className="text-sm">Loading preview...</span>
+                      <span className="text-sm">
+                        {template.source === "private"
+                          ? "Preparing local preview…"
+                          : "Loading preview..."}
+                      </span>
                     </div>
                   )}
                   {error && (
-                    <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                    <div className="flex max-w-lg flex-col items-center gap-2 text-muted-foreground">
                       <span className="text-sm">Preview not available</span>
-                      <span className="text-xs opacity-60">
-                        Run `pnpm generate-previews` to generate
-                      </span>
+                      <p className="max-h-40 overflow-auto whitespace-pre-wrap text-xs">
+                        {template.source === "private"
+                          ? previewError
+                          : "The bundled preview could not be loaded."}
+                      </p>
+                      {template.source === "private" && (
+                        <>
+                          <span className="text-xs">
+                            You can still use this template to create a project.
+                          </span>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setRetryCount((n) => n + 1)}
+                          >
+                            Retry preview
+                          </Button>
+                        </>
+                      )}
                     </div>
                   )}
                   {!loading && !error && numPages > 0 && (

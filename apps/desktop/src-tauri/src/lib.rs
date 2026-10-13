@@ -6,6 +6,7 @@ mod latex;
 mod projects;
 mod services;
 mod skills;
+mod templates;
 mod uv;
 
 use std::path::Path;
@@ -475,6 +476,9 @@ pub fn run() {
             read_clipboard_file_paths,
             latex::detect_texlive,
             services::project_service,
+            templates::template_list,
+            templates::template_preview,
+            templates::template_create_project,
             projects::project_register,
             projects::project_relocate,
             projects::project_rename,

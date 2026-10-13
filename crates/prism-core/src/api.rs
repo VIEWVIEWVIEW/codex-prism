@@ -2,6 +2,34 @@ use crate::Backend;
 use crate::{codex, latex, projects, services, skills, uv};
 use serde_json::Value;
 impl Backend {
+    pub fn template_list(&self) -> Result<crate::templates::TemplateLibrary, String> {
+        let _operation = self.enter()?;
+        crate::templates::list(self)
+    }
+    pub fn template_create_project(
+        &self,
+        id: String,
+        revision: String,
+        destination: String,
+    ) -> Result<crate::templates::TemplateProject, String> {
+        let _operation = self.enter()?;
+        crate::templates::create_project(self, &id, &revision, &destination)
+    }
+    pub async fn template_preview(
+        &self,
+        id: String,
+        revision: String,
+        retry: bool,
+    ) -> Result<Vec<u8>, String> {
+        let admitted = self.enter()?;
+        let backend = self.clone();
+        tokio::spawn(async move {
+            let _operation = admitted;
+            crate::templates::preview(backend, id, revision, retry).await
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
     pub fn project_register(&self, root: String) -> Result<projects::Project, String> {
         let _operation = self.enter()?;
         projects::project_register(self.clone(), root)

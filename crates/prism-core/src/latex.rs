@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -163,27 +163,41 @@ enum BibTool {
     None,
 }
 
-/// Detect which bibliography tool is needed by scanning .tex content.
-fn detect_bib_tool(content: &str) -> BibTool {
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('%') {
+/// The first engine pass resolves packages, includes, and backend options. Its
+/// Biber control file or BibTeX auxiliary commands are more reliable than source scanning.
+fn generated_bib_tool(work_dir: &Path, main_stem: &str) -> Result<BibTool, String> {
+    let bcf = crate::projects::resolve(work_dir, &format!("{main_stem}.bcf"))?;
+    if bcf.is_file() {
+        return Ok(BibTool::Biber);
+    }
+    let mut pending = vec![format!("{main_stem}.aux")];
+    let mut visited = HashSet::new();
+    while let Some(relative) = pending.pop() {
+        if !visited.insert(relative.clone()) {
             continue;
         }
-        if trimmed.contains("\\usepackage") && trimmed.contains("biblatex") {
-            return BibTool::Biber;
+        let path = crate::projects::resolve(work_dir, &relative)?;
+        let aux = match std::fs::read_to_string(&path) {
+            Ok(aux) => aux,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("Cannot read bibliography auxiliary file: {e}")),
+        };
+        for line in aux.lines() {
+            let line = line.trim();
+            if line.starts_with("\\bibdata{") {
+                return Ok(BibTool::BibTeX);
+            }
+            if let Some(input) = line
+                .strip_prefix("\\@input{")
+                .and_then(|s| s.split('}').next())
+            {
+                if input.ends_with(".aux") {
+                    pending.push(input.into());
+                }
+            }
         }
     }
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('%') {
-            continue;
-        }
-        if trimmed.contains("\\bibliography{") || trimmed.contains("\\addbibresource{") {
-            return BibTool::BibTeX;
-        }
-    }
-    BibTool::None
+    Ok(BibTool::None)
 }
 
 /// Resolve a TeXLive engine binary to its full path.
@@ -433,6 +447,7 @@ fn run_texlive_pass(
 
 /// Run from the build directory with a relative job name. BibTeX rejects
 /// absolute output paths under TeX Live's default openout_any=p policy.
+#[cfg(test)]
 fn run_bibliography_pass(
     executable: &Path,
     main_stem: &str,
@@ -463,7 +478,18 @@ fn compile_with_texlive(
     work_dir: &Path,
     main_file: &str,
     engine: Option<TexEngine>,
-    tex_content: &str,
+) -> Result<(), String> {
+    compile_with_texlive_using(work_dir, main_file, engine, |program, args, dir| {
+        let (main, flags) = args.split_last().ok_or("Missing compiler argument")?;
+        run_texlive_pass(program, flags, Path::new(main), dir)
+    })
+}
+
+fn compile_with_texlive_using(
+    work_dir: &Path,
+    main_file: &str,
+    engine: Option<TexEngine>,
+    mut run: impl FnMut(&Path, &[&str], &Path) -> Result<std::process::Output, String>,
 ) -> Result<(), String> {
     let engine_name = match engine {
         Some(TexEngine::XeLaTeX) => "xelatex",
@@ -477,26 +503,36 @@ fn compile_with_texlive(
         engine_name,
         engine_path.display()
     );
-    let bib_tool = detect_bib_tool(tex_content);
+    let main_stem = Path::new(main_file)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("document");
+    // A persistent build may still contain a Biber control file from an earlier
+    // bibliography configuration. Only a freshly generated file may select Biber.
+    let bcf = crate::projects::resolve(work_dir, &format!("{main_stem}.bcf"))?;
+    match std::fs::remove_file(bcf) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("Cannot remove stale Biber control file: {e}")),
+    }
 
     // Use "." as output-directory since current_dir is already work_dir.
     // Absolute paths break when they contain ~ (e.g. iCloud's com~apple~CloudDocs)
     // because TeX interprets ~ as a home directory shortcut.
     let output_dir_arg = "-output-directory=.".to_string();
     // Intermediate passes may need to recover from stale bibliography/auxiliary files.
-    let common_args: Vec<&str> = vec!["-synctex=1", "-interaction=nonstopmode", &output_dir_arg];
-
-    let main_file_path = Path::new(main_file);
+    let common_args: Vec<&str> = vec![
+        "-synctex=1",
+        "-interaction=nonstopmode",
+        &output_dir_arg,
+        main_file,
+    ];
 
     // Pass 1
-    run_texlive_pass(&engine_path, &common_args, main_file_path, work_dir)?;
+    run(&engine_path, &common_args, work_dir)?;
 
     // Bib pass (if needed)
-    let main_stem = Path::new(main_file)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("document");
-
+    let bib_tool = generated_bib_tool(work_dir, main_stem)?;
     let bibliography_program = match bib_tool {
         BibTool::Biber => Some("biber"),
         BibTool::BibTeX => Some("bibtex"),
@@ -504,15 +540,22 @@ fn compile_with_texlive(
     };
     if let Some(program) = bibliography_program {
         let executable = find_texlive_binary(program)?;
-        run_bibliography_pass(&executable, main_stem, work_dir)?;
+        let output = run(&executable, &[main_stem], work_dir)?;
+        if !output.status.success() {
+            return Err(format!(
+                "Bibliography tool {} failed: {}",
+                executable.display(),
+                subprocess_failure(&output)
+            ));
+        }
     }
 
     // Pass 2: resolve references / TOC
-    let mut final_output = run_texlive_pass(&engine_path, &common_args, &main_file_path, work_dir)?;
+    let mut final_output = run(&engine_path, &common_args, work_dir)?;
 
     // Pass 3: stabilize citations (only if bib was used)
     if !matches!(bib_tool, BibTool::None) {
-        final_output = run_texlive_pass(&engine_path, &common_args, &main_file_path, work_dir)?;
+        final_output = run(&engine_path, &common_args, work_dir)?;
     }
 
     if !final_output.status.success() {
@@ -524,6 +567,178 @@ fn compile_with_texlive(
         return Err(extract_error_lines(&log));
     }
     Ok(())
+}
+
+async fn preview_cancelled(cancel: &mut tokio::sync::watch::Receiver<bool>) {
+    if !*cancel.borrow() {
+        let _ = cancel.changed().await;
+    }
+}
+
+/// Owned preview subprocesses: timeout/cancellation kills and reaps the compiler.
+async fn run_preview_program(
+    program: &Path,
+    args: &[&str],
+    dir: &Path,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
+    deadline: tokio::time::Instant,
+) -> Result<std::process::Output, String> {
+    use tokio::io::AsyncReadExt;
+    if *cancel.borrow() {
+        return Err("Backend is shutting down".into());
+    }
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.args(args)
+        .current_dir(dir)
+        .env("PATH", texlive_env_path(program))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Cannot start {}: {e}", program.display()))?;
+    let mut stdout = child.stdout.take().ok_or("Missing compiler stdout")?;
+    let mut stderr = child.stderr.take().ok_or("Missing compiler stderr")?;
+    let mut out = tokio::spawn(async move {
+        let mut bytes = vec![];
+        stdout.read_to_end(&mut bytes).await.map(|_| bytes)
+    });
+    let mut err = tokio::spawn(async move {
+        let mut bytes = vec![];
+        stderr.read_to_end(&mut bytes).await.map(|_| bytes)
+    });
+    let result = tokio::select! {
+        status = child.wait() => status.map_err(|e| e.to_string()),
+        _ = tokio::time::sleep_until(deadline) => Err("Preview compilation timed out (60 seconds)".into()),
+        _ = preview_cancelled(&mut cancel) => Err("Backend is shutting down".into()),
+    };
+    let status = match result {
+        Ok(status) => status,
+        Err(error) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            out.abort();
+            err.abort();
+            return Err(error);
+        }
+    };
+    let output = tokio::select! {
+        output = async {
+            let stdout = (&mut out).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+            let stderr = (&mut err).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+            Ok(std::process::Output { status, stdout, stderr })
+        } => output,
+        _ = tokio::time::sleep_until(deadline) => Err("Preview compilation timed out (60 seconds)".into()),
+        _ = preview_cancelled(&mut cancel) => Err("Backend is shutting down".into()),
+    };
+    if output.is_err() {
+        out.abort();
+        err.abort();
+    }
+    output
+}
+
+pub(crate) async fn preview_toolchain(
+    content: &str,
+    cancel: tokio::sync::watch::Receiver<bool>,
+) -> Result<String, String> {
+    let content = content.to_owned();
+    let programs = tokio::task::spawn_blocking(move || {
+        let engine = match detect_tex_engine(&content) {
+            Some(TexEngine::XeLaTeX) => "xelatex",
+            Some(TexEngine::LuaLaTeX) => "lualatex",
+            _ => "pdflatex",
+        };
+        // The bibliography backend is resolved after the first engine pass, so
+        // include both installed tools in cache identity without requiring either
+        // until compilation actually needs it.
+        let programs = vec![
+            (engine, Some(find_texlive_binary(engine)?)),
+            ("bibtex", find_texlive_binary("bibtex").ok()),
+            ("biber", find_texlive_binary("biber").ok()),
+        ];
+        Ok::<_, String>(programs)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let mut identity = String::new();
+    for (name, program) in programs {
+        let Some(program) = program else {
+            identity.push_str(&format!("{name}:unavailable;"));
+            continue;
+        };
+        let output = run_preview_program(
+            &program,
+            &["--version"],
+            &std::env::temp_dir(),
+            cancel.clone(),
+            tokio::time::Instant::now() + std::time::Duration::from_secs(5),
+        )
+        .await?;
+        identity.push_str(&format!(
+            "{}:{};",
+            program.display(),
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .next()
+                .unwrap_or_default()
+        ));
+    }
+    Ok(identity)
+}
+
+pub(crate) async fn compile_preview(
+    state: &LatexCompilerState,
+    work: &Path,
+    main: &str,
+    content: &str,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
+) -> Result<Vec<u8>, String> {
+    let _permit = tokio::select! {
+        permit = state.semaphore.clone().acquire_owned() => permit.map_err(|e| e.to_string())?,
+        _ = preview_cancelled(&mut cancel) => return Err("Backend is shutting down".into()),
+    };
+    let work = work.to_path_buf();
+    let main = main.to_owned();
+    let content = content.to_owned();
+    let runtime = tokio::runtime::Handle::current();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+    tokio::task::spawn_blocking(move || {
+        lower_thread_priority();
+        let stem = Path::new(&main)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or("Invalid main document")?;
+        let pdf = work.join(format!("{stem}.pdf"));
+        // Source PDFs are preserved as assets, but cannot masquerade as successful output.
+        if pdf.exists() {
+            std::fs::remove_file(&pdf).map_err(|e| e.to_string())?;
+        }
+        compile_with_texlive_using(
+            &work,
+            &main,
+            detect_tex_engine(&content),
+            |program, args, dir| {
+                runtime.block_on(run_preview_program(
+                    program,
+                    args,
+                    dir,
+                    cancel.clone(),
+                    deadline,
+                ))
+            },
+        )?;
+        let bytes = std::fs::read(pdf).map_err(|e| format!("No preview PDF generated: {e}"))?;
+        if !bytes.starts_with(b"%PDF-") {
+            return Err("Compiler generated an invalid preview PDF".into());
+        }
+        Ok(bytes)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // --- SyncTeX Native Parser ---
@@ -856,7 +1071,7 @@ pub(crate) async fn compile_latex(
     let main_file_clone = main_file.clone();
     let compile_result = tokio::task::spawn_blocking(move || {
         lower_thread_priority();
-        compile_with_texlive(&work_dir_clone, &main_file_clone, engine, &main_tex_content)
+        compile_with_texlive(&work_dir_clone, &main_file_clone, engine)
     })
     .await
     .map_err(|e| format!("Compilation task panicked: {}", e))?;
@@ -1016,7 +1231,7 @@ mod tests {
         let simple = "\\documentclass{article}\n\\begin{document}Test\\end{document}\n";
         for engine in [None, Some(TexEngine::XeLaTeX), Some(TexEngine::LuaLaTeX)] {
             std::fs::write(dir.path().join("main.tex"), simple).unwrap();
-            compile_with_texlive(dir.path(), "main.tex", engine, simple).unwrap();
+            compile_with_texlive(dir.path(), "main.tex", engine).unwrap();
             assert!(std::fs::read(dir.path().join("main.pdf"))
                 .unwrap()
                 .starts_with(b"%PDF-"));
@@ -1024,21 +1239,21 @@ mod tests {
         let invalid =
             "\\documentclass{article}\n\\begin{document}\\undefinedPrismCommand\\end{document}";
         std::fs::write(dir.path().join("main.tex"), invalid).unwrap();
-        let error = compile_with_texlive(dir.path(), "main.tex", None, invalid).unwrap_err();
+        let error = compile_with_texlive(dir.path(), "main.tex", None).unwrap_err();
         assert!(error.contains("Undefined control sequence"));
         // A stale bibliography must be replaced before the final engine pass.
         let bib = "\\documentclass{article}\n\\begin{document}\\cite{known}\\bibliographystyle{plain}\\bibliography{refs}\\end{document}";
         std::fs::write(dir.path().join("main.tex"), bib).unwrap();
         std::fs::write(dir.path().join("main.bbl"), "\\obsoleteBibliographyCommand").unwrap();
         std::fs::write(dir.path().join("refs.bib"), "@article{known,author={A. Writer},title={Verified Entry},journal={Journal},year={2026}}").unwrap();
-        compile_with_texlive(dir.path(), "main.tex", None, bib).unwrap();
+        compile_with_texlive(dir.path(), "main.tex", None).unwrap();
         let log = std::fs::read_to_string(dir.path().join("main.log")).unwrap();
         assert!(!log.contains("undefined"));
         assert!(std::fs::read_to_string(dir.path().join("main.bbl"))
             .unwrap()
             .contains("Verified"));
         std::fs::remove_file(dir.path().join("refs.bib")).unwrap();
-        assert!(compile_with_texlive(dir.path(), "main.tex", None, bib)
+        assert!(compile_with_texlive(dir.path(), "main.tex", None)
             .unwrap_err()
             .contains("Bibliography tool"));
     }
@@ -1079,57 +1294,149 @@ mod tests {
         assert!(error.contains("Install TeX Live"));
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore = "requires PRISM_TEST_PROJECT, compiles only a temporary copy"]
-    fn texlive_integration_project_copy() {
+    async fn texlive_integration_project_copy() {
         let project = std::env::var("PRISM_TEST_PROJECT").unwrap();
         let main = std::env::var("PRISM_TEST_MAIN").unwrap();
         let output = std::env::var("PRISM_TEST_OUTPUT").unwrap();
         let dir = tempfile::tempdir().unwrap();
         copy_dir_recursive(Path::new(&project), dir.path()).unwrap();
         let content = std::fs::read_to_string(dir.path().join(&main)).unwrap();
-        compile_with_texlive(dir.path(), &main, detect_tex_engine(&content), &content).unwrap();
-        let stem = Path::new(&main).file_stem().unwrap().to_str().unwrap();
-        std::fs::copy(dir.path().join(format!("{}.pdf", stem)), output).unwrap();
-    }
-
-    // --- detect_bib_tool ---
-
-    #[test]
-    fn test_detect_bib_tool_biber() {
-        let content =
-            "\\documentclass{article}\n\\usepackage{biblatex}\n\\begin{document}\n\\end{document}";
-        assert_eq!(detect_bib_tool(content), BibTool::Biber);
-    }
-
-    #[test]
-    fn test_detect_bib_tool_biblatex_with_options() {
-        let content = "\\documentclass{article}\n\\usepackage[style=apa,backend=biber]{biblatex}\n\\begin{document}";
-        assert_eq!(detect_bib_tool(content), BibTool::Biber);
+        compile_with_texlive(dir.path(), &main, detect_tex_engine(&content)).unwrap();
+        // Exercise the isolated-preview runner as well as normal project compilation.
+        let (_send, cancel) = tokio::sync::watch::channel(false);
+        preview_toolchain(&content, cancel.clone()).await.unwrap();
+        let bytes = compile_preview(
+            &LatexCompilerState::default(),
+            dir.path(),
+            &main,
+            &content,
+            cancel,
+        )
+        .await
+        .unwrap();
+        assert!(bytes.starts_with(b"%PDF-"));
+        std::fs::write(output, bytes).unwrap();
     }
 
     #[test]
-    fn test_detect_bib_tool_bibtex() {
-        let content = "\\documentclass{article}\n\\bibliography{refs}\n\\end{document}";
-        assert_eq!(detect_bib_tool(content), BibTool::BibTeX);
+    fn generated_biber_control_file_takes_precedence_over_auxiliary_commands() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("slides.bcf"), "<bcf:controlfile/>").unwrap();
+        std::fs::write(dir.path().join("slides.aux"), "\\bibdata{refs}").unwrap();
+        assert_eq!(
+            generated_bib_tool(dir.path(), "slides").unwrap(),
+            BibTool::Biber
+        );
     }
 
     #[test]
-    fn test_detect_bib_tool_addbibresource() {
-        let content = "\\documentclass{article}\n\\addbibresource{refs.bib}\n\\end{document}";
-        assert_eq!(detect_bib_tool(content), BibTool::BibTeX);
+    fn generated_bibtex_commands_can_come_from_nested_auxiliary_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sections")).unwrap();
+        std::fs::write(
+            dir.path().join("paper.aux"),
+            "\\@input{sections/references.aux}",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("sections/references.aux"),
+            "\\@input{paper.aux}\n\\bibdata{refs}\n\\bibstyle{plain}",
+        )
+        .unwrap();
+        assert_eq!(
+            generated_bib_tool(dir.path(), "paper").unwrap(),
+            BibTool::BibTeX
+        );
     }
 
     #[test]
-    fn test_detect_bib_tool_none() {
-        let content = "\\documentclass{article}\n\\begin{document}\nHello\n\\end{document}";
-        assert_eq!(detect_bib_tool(content), BibTool::None);
+    fn generated_auxiliary_files_without_bibliography_data_do_not_run_bibtex() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            generated_bib_tool(dir.path(), "slides").unwrap(),
+            BibTool::None
+        );
+        std::fs::write(dir.path().join("slides.aux"), "% \\bibdata{commented}\n\\relax\n\\@input{missing.aux}\n\\@input{slides.aux}\n\\citation{example}").unwrap();
+        assert_eq!(
+            generated_bib_tool(dir.path(), "slides").unwrap(),
+            BibTool::None
+        );
     }
 
     #[test]
-    fn test_detect_bib_tool_commented_out() {
-        let content = "\\documentclass{article}\n% \\bibliography{refs}\n% \\usepackage{biblatex}\n\\end{document}";
-        assert_eq!(detect_bib_tool(content), BibTool::None);
+    fn generated_auxiliary_inputs_cannot_escape_the_build_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("paper.aux"), "\\@input{../outside.aux}").unwrap();
+        assert!(generated_bib_tool(dir.path(), "paper").is_err());
+    }
+
+    #[test]
+    #[ignore = "requires system pdfLaTeX, Biber, BibTeX and biblatex"]
+    fn texlive_integration_hidden_biblatex_backend_and_backend_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let package = dir.path().join("localbib.sty");
+        let main = dir.path().join("slides.tex");
+        std::fs::write(
+            &package,
+            "\\RequirePackage[backend=biber,style=numeric]{biblatex}",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("refs.bib"), "@article{known,author={A. Writer},title={Verified Entry},journal={Journal},year={2026}}").unwrap();
+        // Empty starters are valid; biblatex is loaded indirectly, as in custom themes.
+        let preamble =
+            "\\documentclass{article}\n\\usepackage{localbib}\n\\addbibresource{refs.bib}\n";
+        std::fs::write(
+            &main,
+            format!("{preamble}\\begin{{document}}Empty starter\\end{{document}}"),
+        )
+        .unwrap();
+        compile_with_texlive(dir.path(), "slides.tex", None).unwrap();
+        assert!(dir.path().join("slides.bcf").is_file());
+        assert!(std::fs::read_to_string(dir.path().join("slides.blg"))
+            .unwrap()
+            .contains("Biber"));
+
+        std::fs::write(
+            &main,
+            format!(
+                "{preamble}\\begin{{document}}\\cite{{known}}\\printbibliography\\end{{document}}"
+            ),
+        )
+        .unwrap();
+        compile_with_texlive(dir.path(), "slides.tex", None).unwrap();
+        assert!(std::fs::read_to_string(dir.path().join("slides.bbl"))
+            .unwrap()
+            .contains("Verified"));
+        let log = std::fs::read_to_string(dir.path().join("slides.log")).unwrap();
+        assert!(!log.contains("Citation 'known'"));
+
+        // A stale .bcf must not override biblatex's explicit BibTeX backend.
+        std::fs::write(
+            &package,
+            "\\RequirePackage[backend=bibtex,style=numeric]{biblatex}",
+        )
+        .unwrap();
+        compile_with_texlive(dir.path(), "slides.tex", None).unwrap();
+        assert!(!dir.path().join("slides.bcf").exists());
+        assert!(std::fs::read_to_string(dir.path().join("slides.blg"))
+            .unwrap()
+            .contains("BibTeX"));
+        assert!(std::fs::read_to_string(dir.path().join("slides.bbl"))
+            .unwrap()
+            .contains("Verified"));
+
+        std::fs::write(
+            &main,
+            "\\documentclass{article}\n\\begin{document}No bibliography\\end{document}",
+        )
+        .unwrap();
+        compile_with_texlive(dir.path(), "slides.tex", None).unwrap();
+        assert_eq!(
+            generated_bib_tool(dir.path(), "slides").unwrap(),
+            BibTool::None
+        );
     }
 
     // --- extract_error_lines ---
@@ -1783,5 +2090,77 @@ mod existing_pdf_tests {
         assert!(find_existing_pdf(d.path(), "main.tex").unwrap().is_none());
         std::fs::write(d.path().join("main.pdf"), b"%PDF-1.7 valid").unwrap();
         assert!(find_existing_pdf(d.path(), "main.tex").unwrap().is_some());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod preview_process_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    fn sleeper(dir: &Path) -> PathBuf {
+        let program = dir.join("compiler");
+        std::fs::write(
+            &program,
+            "#!/bin/sh\necho $$ > compiler.pid\nexec sleep 30\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        program
+    }
+    fn assert_reaped(dir: &Path) {
+        let pid = std::fs::read_to_string(dir.join("compiler.pid")).unwrap();
+        assert!(!std::process::Command::new("kill")
+            .args(["-0", pid.trim()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success());
+    }
+    #[tokio::test]
+    async fn preview_timeout_kills_and_reaps_the_compiler() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = sleeper(dir.path());
+        let (_send, cancel) = tokio::sync::watch::channel(false);
+        let result = run_preview_program(
+            &program,
+            &[],
+            dir.path(),
+            cancel,
+            tokio::time::Instant::now() + std::time::Duration::from_millis(100),
+        )
+        .await;
+        assert!(result.unwrap_err().contains("timed out"));
+        assert_reaped(dir.path());
+    }
+    #[tokio::test]
+    async fn preview_shutdown_kills_and_reaps_the_compiler() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = sleeper(dir.path());
+        let (send, cancel) = tokio::sync::watch::channel(false);
+        let path = dir.path().to_path_buf();
+        let task = tokio::spawn(async move {
+            run_preview_program(
+                &program,
+                &[],
+                &path,
+                cancel,
+                tokio::time::Instant::now() + std::time::Duration::from_secs(60),
+            )
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !dir.path().join("compiler.pid").exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        send.send_replace(true);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(result.unwrap_err().contains("shutting down"));
+        assert_reaped(dir.path());
     }
 }

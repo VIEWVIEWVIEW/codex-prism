@@ -1,0 +1,165 @@
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { exists, mkdir, writeTextFile } from "@tauri-apps/plugin-fs";
+import { TemplateGallery } from "@/components/template-gallery/template-gallery";
+import { TemplatePreview } from "@/components/template-gallery/template-preview";
+import { backend, type TemplateLibrary } from "@/lib/backend";
+import { privateTemplateItem } from "@/lib/template-catalog";
+import { getTemplatePdfBuffer } from "@/lib/template-preview-cache";
+import { useTemplateStore } from "@/stores/template-store";
+import { useProjectStore } from "@/stores/project-store";
+import { useDocumentStore } from "@/stores/document-store";
+import { useAgentChatStore } from "@/stores/agent-chat-store";
+
+vi.mock("@/lib/template-preview-cache", () => ({
+  getTemplatePdfBuffer: vi.fn(),
+  resetPrivatePreviewFailures: vi.fn(),
+  subscribeThumbnails: () => () => {},
+  getThumbnail: () => undefined,
+  isThumbnailFailed: () => true,
+  generateThumbnail: vi.fn(async () => null),
+}));
+vi.mock("@/lib/mupdf/mupdf-client", () => ({ getMupdfClient: vi.fn() }));
+
+const library: TemplateLibrary = {
+  root: "/home/test/.codexprism/templates",
+  templates: [
+    {
+      id: "private:lab",
+      name: "Lab manuscript",
+      description: "A complete starter",
+      category: "academic",
+      tags: ["internal"],
+      mainFile: "document/paper.tex",
+      revision: "one",
+    },
+  ],
+  issues: [{ folder: "broken", message: "Several main documents found" }],
+};
+let root: Root;
+let host: HTMLDivElement;
+const originalOpenProject = useDocumentStore.getState().openProject;
+
+beforeEach(() => {
+  (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+  vi.restoreAllMocks();
+  vi.clearAllMocks();
+  useTemplateStore.getState().reset();
+  useProjectStore.setState({ lastProjectFolder: "/work" });
+  vi.mocked(getTemplatePdfBuffer).mockRejectedValue(
+    new Error("Missing TeX Live"),
+  );
+  host = document.createElement("div");
+  document.body.append(host);
+  root = createRoot(host);
+});
+afterEach(() => {
+  act(() => root.unmount());
+  host.remove();
+  useDocumentStore.setState({ openProject: originalOpenProject });
+});
+function button(label: string): HTMLButtonElement {
+  return Array.from(document.querySelectorAll("button")).find(
+    (b) => b.textContent?.trim() === label,
+  )!;
+}
+function fill(element: HTMLInputElement | HTMLTextAreaElement, value: string) {
+  const prototype =
+    element instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype
+      : HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(
+    element,
+    value,
+  );
+  element.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+it("shows private cards, counts, library issues, and rescans through Refresh", async () => {
+  const list = vi.spyOn(backend.templates, "list").mockResolvedValue(library);
+  await act(async () => root.render(<TemplateGallery />));
+  expect(host.textContent).toContain("Lab manuscript");
+  expect(host.textContent).toContain("Private");
+  expect(host.textContent).toContain("broken: Several main documents found");
+  const my = Array.from(host.querySelectorAll("button")).find((b) =>
+    b.textContent?.startsWith("My Templates"),
+  )!;
+  expect(my.textContent).toBe("My Templates1");
+  await act(async () => my.click());
+  expect(host.textContent).toContain(library.root);
+  expect(host.textContent).not.toContain("Standard Research Paper");
+  list.mockResolvedValue({ ...library, templates: [], issues: [] });
+  await act(async () => button("Refresh").click());
+  expect(list).toHaveBeenCalledTimes(2);
+  expect(host.textContent).toContain("No private templates yet");
+});
+
+it.each([
+  false,
+  true,
+])("creates a full private project despite a failed preview (custom instructions: %s)", async (customInstructions) => {
+  const item = privateTemplateItem(library.templates[0]);
+  useTemplateStore.setState({ templates: [item], previewTemplateId: item.id });
+  const create = vi
+    .spyOn(backend.templates, "createProject")
+    .mockResolvedValue({
+      project: { id: "project", root: "/work/new-paper", name: "new-paper" },
+      mainFile: "document/paper.tex",
+    });
+  vi.mocked(exists).mockImplementation(
+    async (path) => String(path).endsWith("AGENTS.md") && customInstructions,
+  );
+  vi.mocked(writeTextFile).mockResolvedValue(undefined);
+  const open = vi.fn(async () => {});
+  useDocumentStore.setState({ openProject: open });
+  const session = vi
+    .spyOn(useAgentChatStore.getState(), "newSession")
+    .mockImplementation(() => {});
+  const prompt = vi
+    .spyOn(useAgentChatStore.getState(), "setPendingInitialPrompt")
+    .mockImplementation(() => {});
+  await act(async () => root.render(<TemplatePreview />));
+  expect(document.body.textContent).toContain("Missing TeX Live");
+  expect(document.body.textContent).toContain(
+    "You can still use this template",
+  );
+  await act(async () => button("Retry preview").click());
+  expect(getTemplatePdfBuffer).toHaveBeenLastCalledWith(item, true, true);
+  await act(async () => button("Use Template").click());
+  await act(async () => {
+    fill(
+      document.querySelector<HTMLInputElement>(
+        'input[placeholder="e.g., conference-paper"]',
+      )!,
+      "new-paper",
+    );
+    if (!customInstructions)
+      fill(document.querySelector("textarea")!, "Write about proteins");
+  });
+  await act(async () =>
+    button(
+      customInstructions ? "Create Project" : "Create & Generate with AI",
+    ).click(),
+  );
+  expect(create).toHaveBeenCalledWith(item.id, "one", "/work/new-paper");
+  expect(mkdir).not.toHaveBeenCalled();
+  expect(open).toHaveBeenCalledWith("/work/new-paper", "document/paper.tex");
+  if (customInstructions) {
+    expect(writeTextFile).not.toHaveBeenCalled();
+    expect(session).not.toHaveBeenCalled();
+  } else {
+    expect(writeTextFile).toHaveBeenCalledTimes(1);
+    expect(writeTextFile).toHaveBeenCalledWith(
+      "/work/new-paper/AGENTS.md",
+      expect.any(String),
+    );
+    expect(prompt).toHaveBeenCalledWith(
+      expect.stringContaining("adapt the existing document"),
+    );
+    expect(prompt).toHaveBeenCalledWith(
+      expect.stringContaining("Write about proteins"),
+    );
+  }
+  expect(useTemplateStore.getState().previewTemplateId).toBeNull();
+});

@@ -100,7 +100,7 @@ interface DocumentState {
   /** Per-root-file: rootFileId → contentGeneration at last successful compile. */
   lastCompiledGenerations: Map<string, number>;
 
-  openProject: (rootPath: string) => Promise<void>;
+  openProject: (rootPath: string, preferredMainFile?: string) => Promise<void>;
   renameProject: (newName: string) => Promise<void>;
   closeProject: () => void;
   setActiveFile: (id: string) => void;
@@ -341,7 +341,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
   compileErrorCache: new Map(),
   lastCompiledGenerations: new Map(),
 
-  openProject: async (rootPath: string) => {
+  openProject: async (rootPath: string, preferredMainFile?: string) => {
     log.info(`Opening project: ${rootPath}`);
     const project = await backend.projects.register(rootPath);
     set({ projectId: project.id });
@@ -402,8 +402,12 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
     // Find the main tex file
     const mainTex =
       projectFiles.find(
+        (f) => f.relativePath === preferredMainFile && f.type === "tex",
+      ) ||
+      projectFiles.find(
         (f) => f.name === "main.tex" || f.name === "document.tex",
-      ) || projectFiles.find((f) => f.type === "tex");
+      ) ||
+      projectFiles.find((f) => f.type === "tex");
 
     clearPdfBytesCache();
     set({

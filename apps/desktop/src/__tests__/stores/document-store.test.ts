@@ -163,6 +163,17 @@ describe("useDocumentStore", () => {
   });
 
   describe("openProject", () => {
+    it("opens a template's chosen main file ahead of main.tex", async () => {
+      vi.mocked(invoke).mockResolvedValue(undefined as never);
+      vi.mocked(readDir).mockResolvedValue([
+        { name: "main.tex", isDirectory: false },
+        { name: "paper.tex", isDirectory: false },
+      ] as any);
+      vi.mocked(readTextFile).mockResolvedValue("\\documentclass{article}");
+      await useDocumentStore.getState().openProject("/project", "paper.tex");
+      expect(useDocumentStore.getState().activeFileId).toBe("paper.tex");
+    });
+
     it("re-authorizes the project directory before scanning", async () => {
       const projectPath = "E:\\overleaf-cache\\论文项目";
       let resolveAuthorization!: () => void;

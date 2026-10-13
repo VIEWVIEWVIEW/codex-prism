@@ -1,6 +1,6 @@
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore, useRef, useState } from "react";
 import { LoaderIcon } from "lucide-react";
-import type { TemplateDefinition } from "@/lib/template-registry";
+import type { TemplateCatalogItem } from "@/lib/template-catalog";
 import { useTemplateStore } from "@/stores/template-store";
 import {
   getThumbnail,
@@ -103,7 +103,7 @@ export const THUMBNAIL_MAP: Record<string, React.FC<{ color: string }>> = {
 };
 
 export function getFallbackThumbnail(
-  template: TemplateDefinition,
+  template: TemplateCatalogItem,
 ): React.FC<{ color: string }> {
   return THUMBNAIL_MAP[template.id] || ThumbnailPaper;
 }
@@ -111,29 +111,48 @@ export function getFallbackThumbnail(
 // ─── Template Card ───
 
 interface TemplateCardProps {
-  template: TemplateDefinition;
+  template: TemplateCatalogItem;
 }
 
 export function TemplateCard({ template }: TemplateCardProps) {
   const openPreview = useTemplateStore((s) => s.openPreview);
   const FallbackThumbnail = getFallbackThumbnail(template);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    if (typeof IntersectionObserver === "undefined") {
+      setVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setVisible(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "100px" },
+    );
+    if (cardRef.current) observer.observe(cardRef.current);
+    return () => observer.disconnect();
+  }, []);
 
   const thumbnailUrl = useSyncExternalStore(subscribeThumbnails, () =>
-    getThumbnail(template.id),
+    getThumbnail(template),
   );
 
   const failed = useSyncExternalStore(subscribeThumbnails, () =>
-    isThumbnailFailed(template.id),
+    isThumbnailFailed(template),
   );
 
   useEffect(() => {
-    if (!thumbnailUrl && !failed) {
-      generateThumbnail(template.id);
+    if (visible && !thumbnailUrl && !failed) {
+      void generateThumbnail(template);
     }
-  }, [template.id, thumbnailUrl, failed]);
+  }, [template, thumbnailUrl, failed, visible]);
 
   return (
-    <div className="group flex flex-col">
+    <div ref={cardRef} className="group flex flex-col">
       {/* Fixed-height thumbnail area — centers cards with different aspect ratios */}
       <div className="flex aspect-3/4 items-center justify-center">
         <button
@@ -161,6 +180,9 @@ export function TemplateCard({ template }: TemplateCardProps) {
       </div>
       <div className="mt-2 px-0.5">
         <div className="font-medium text-sm leading-tight">{template.name}</div>
+        {template.source === "private" && (
+          <span className="text-muted-foreground text-xs">Private</span>
+        )}
         <div className="mt-0.5 line-clamp-2 text-muted-foreground text-xs leading-snug">
           {template.description}
         </div>

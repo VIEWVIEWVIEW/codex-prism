@@ -10,6 +10,7 @@ pub mod projects;
 mod review_storage;
 mod services;
 pub mod skills;
+pub mod templates;
 pub mod uv;
 pub use events::{BackendEvent, EventSink, NoopEventSink, RecordingEventSink};
 
@@ -51,6 +52,7 @@ pub(crate) struct Inner {
     projects: projects::Projects,
     codex: codex::CodexState,
     latex: latex::LatexCompilerState,
+    templates: templates::TemplateState,
     lifecycle: Mutex<Lifecycle>,
     idle: tokio::sync::Notify,
     shutdown_lock: tokio::sync::Mutex<()>,
@@ -107,6 +109,7 @@ impl Backend {
                 projects: Default::default(),
                 codex: Default::default(),
                 latex: Default::default(),
+                templates: Default::default(),
                 lifecycle: Default::default(),
                 idle: Default::default(),
                 shutdown_lock: Default::default(),
