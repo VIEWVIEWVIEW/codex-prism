@@ -43,10 +43,13 @@ useAgentChatStore.setState({
   projectId: project.id,
   review: { active: false, changes: [] },
 });
-useSettingsStore.setState({ autoRecompile: true });
+useSettingsStore.setState({
+  autoRecompile: new URLSearchParams(location.search).get("auto") !== "off",
+});
 (window as any).smoke = {
   call,
   compiling: () => useDocumentStore.getState().isCompiling,
+  compilationCount: () => completedCompiles,
   autoCompiledPendingReview: () =>
     completedCompiles > 0 &&
     !useDocumentStore.getState().isCompiling &&

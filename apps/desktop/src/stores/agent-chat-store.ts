@@ -223,13 +223,20 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
     try {
       await backend.review.resolve(id, path, undo);
       await get().refreshReview();
-      if (undo || !get().locked) {
-        await useDocumentStore.getState().refreshFiles();
-      }
-      if (undo && !get().locked && get().projectId === id) {
+      if (
+        get().projectId !== id ||
+        useDocumentStore.getState().projectId !== id
+      )
+        return;
+      await useDocumentStore.getState().refreshFiles();
+      // Keep refreshes the ordinary preview even with Auto off or other files pending.
+      // Partial Undo still uses the rebuilt visual artifact until review is complete.
+      if ((!undo || !get().locked) && get().projectId === id) {
         const doc = useDocumentStore.getState();
         const { compileLatex, resolveCompileTarget, formatCompileError } =
           await import("@/lib/latex-compiler");
+        if (useDocumentStore.getState().projectId !== id || get().review.active)
+          return;
         const target = resolveCompileTarget(
           getCurrentPdfRootId() ?? doc.activeFileId,
           doc.files,
@@ -242,7 +249,7 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
               doc.setPdfData(pdf, target.rootId);
           } catch (error) {
             if (useDocumentStore.getState().projectId === id)
-              doc.setCompileError(formatCompileError(error));
+              doc.setCompileError(formatCompileError(error), target.rootId);
           } finally {
             if (useDocumentStore.getState().projectId === id)
               doc.setIsCompiling(false);

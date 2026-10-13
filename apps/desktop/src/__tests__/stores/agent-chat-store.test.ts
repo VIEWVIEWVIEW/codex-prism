@@ -2,6 +2,7 @@ import { beforeEach, describe, it, expect, vi } from "vitest";
 import { useAgentChatStore } from "@/stores/agent-chat-store";
 import { useDocumentStore } from "@/stores/document-store";
 import { backend } from "@/lib/backend";
+import { compileLatex, resolveCompileTarget } from "@/lib/latex-compiler";
 vi.mock("@/lib/backend", () => ({
   backend: {
     projects: { register: vi.fn(async () => ({ id: "p1", root: "/paper" })) },
@@ -21,16 +22,19 @@ vi.mock("@/lib/backend", () => ({
 }));
 vi.mock("@/stores/document-store", () => ({
   useDocumentStore: { getState: vi.fn() },
+  getCurrentPdfRootId: vi.fn(() => "main.tex"),
 }));
 vi.mock("@/lib/latex-compiler", () => ({
   resolveCompileTarget: vi.fn(() => null),
   compileLatex: vi.fn(),
+  formatCompileError: (error: unknown) => String(error),
 }));
 const save = vi.fn(async () => {});
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(useDocumentStore.getState).mockReturnValue({
     projectRoot: "/paper",
+    projectId: "p1",
     files: [],
     saveAllFiles: save,
     refreshFiles: vi.fn(async () => {}),
@@ -61,6 +65,65 @@ beforeEach(() => {
     pendingAttachments: [],
     selectedModel: useAgentChatStore.getInitialState().selectedModel,
     effortLevel: useAgentChatStore.getInitialState().effortLevel,
+  });
+});
+
+describe("compilation after accepting review changes", () => {
+  const remaining = {
+    path: "included.tex",
+    kind: "modified" as const,
+    binary: false,
+    oldContent: "old",
+    newContent: "new",
+  };
+  for (const changes of [[], [remaining]]) {
+    it(`recompiles after Keep with ${changes.length} files still pending`, async () => {
+      const doc = useDocumentStore.getState();
+      const setPdfData = vi.fn();
+      const setIsCompiling = vi.fn();
+      Object.assign(doc, { setPdfData, setIsCompiling });
+      vi.mocked(backend.review.get).mockResolvedValueOnce({
+        active: false,
+        changes,
+      });
+      vi.mocked(resolveCompileTarget).mockReturnValueOnce({
+        rootId: "main.tex",
+        targetPath: "main.tex",
+      });
+      const pdf = new Uint8Array([1, 2, 3]);
+      vi.mocked(compileLatex).mockResolvedValueOnce(pdf);
+      await useAgentChatStore.getState().resolveReview("main.tex", false);
+      expect(doc.refreshFiles).toHaveBeenCalledOnce();
+      expect(compileLatex).toHaveBeenCalledWith("/paper", "main.tex");
+      expect(setPdfData).toHaveBeenCalledWith(pdf, "main.tex");
+      expect(setIsCompiling.mock.calls).toEqual([[true], [false]]);
+      expect(useAgentChatStore.getState().review.changes).toEqual(changes);
+    });
+  }
+  it("preserves acceptance and reports a failed recompile", async () => {
+    const setCompileError = vi.fn();
+    const setPdfData = vi.fn();
+    const setIsCompiling = vi.fn();
+    Object.assign(useDocumentStore.getState(), {
+      setCompileError,
+      setPdfData,
+      setIsCompiling,
+    });
+    vi.mocked(resolveCompileTarget).mockReturnValueOnce({
+      rootId: "main.tex",
+      targetPath: "main.tex",
+    });
+    vi.mocked(compileLatex).mockRejectedValueOnce("Build failed");
+    await useAgentChatStore.getState().resolveReview("main.tex", false);
+    expect(backend.review.resolve).toHaveBeenCalledWith(
+      "p1",
+      "main.tex",
+      false,
+    );
+    expect(setCompileError).toHaveBeenCalledWith("Build failed", "main.tex");
+    expect(setPdfData).not.toHaveBeenCalled();
+    expect(setIsCompiling).toHaveBeenLastCalledWith(false);
+    expect(useAgentChatStore.getState().locked).toBe(false);
   });
 });
 describe("Codex turn lifecycle", () => {
