@@ -22,6 +22,7 @@ for (const compilerBackend of ["tectonic", "texlive"]) {
       autoRecompile: true,
       vimMode: true,
       editorFontSize: 14,
+      visualChangeReports: false,
     });
   });
 }
@@ -33,4 +34,13 @@ it("restores the editor font size from saved preferences", async () => {
   localStorage.setItem("codex-prism-settings", saved);
   await useSettingsStore.persist.rehydrate();
   expect(useSettingsStore.getState().editorFontSize).toBe(20);
+});
+
+it("remembers disabled visual change reports across sessions", async () => {
+  useSettingsStore.getState().setVisualChangeReports(false);
+  const saved = localStorage.getItem("codex-prism-settings")!;
+  useSettingsStore.setState({ visualChangeReports: true });
+  localStorage.setItem("codex-prism-settings", saved);
+  await useSettingsStore.persist.rehydrate();
+  expect(useSettingsStore.getState().visualChangeReports).toBe(false);
 });

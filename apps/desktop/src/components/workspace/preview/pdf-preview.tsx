@@ -95,6 +95,10 @@ const ZOOM_OPTIONS = [
 export function PdfPreview() {
   const autoRecompile = useSettingsStore((s) => s.autoRecompile);
   const setAutoRecompile = useSettingsStore((s) => s.setAutoRecompile);
+  const visualChangeReports = useSettingsStore((s) => s.visualChangeReports);
+  const setVisualChangeReports = useSettingsStore(
+    (s) => s.setVisualChangeReports,
+  );
   const contentGeneration = useDocumentStore((s) => s.contentGeneration);
   const agentActive = useAgentChatStore((s) => s.review.active);
   const pdfRevision = useDocumentStore((s) => s.pdfRevision);
@@ -995,17 +999,32 @@ export function PdfPreview() {
             />
             Auto
           </Button>
+          <Button
+            variant={visualChangeReports ? "secondary" : "ghost"}
+            size="sm"
+            className="h-7 shrink-0 gap-1.5 px-2 text-xs"
+            role="switch"
+            aria-label="Visual change reports"
+            aria-checked={visualChangeReports}
+            title="Show visual change reports after agent edits"
+            onClick={() => setVisualChangeReports(!visualChangeReports)}
+          >
+            <span
+              className={
+                visualChangeReports
+                  ? "size-1.5 rounded-full bg-primary"
+                  : "size-1.5 rounded-full bg-muted-foreground/40"
+              }
+            />
+            Changes
+          </Button>
         </div>
-        {visual.metadata.state === "ready" &&
+        {visualChangeReports &&
+          visual.metadata.state === "ready" &&
           visual.metadata.main ===
             files.find((f) => f.id === currentRootFileId)?.relativePath && (
             <div className="flex items-center gap-1 text-xs">
-              <button
-                aria-pressed={visual.shown}
-                onClick={() => visual.setShown(!visual.shown)}
-              >
-                Show changes ({visual.items.length})
-              </button>
+              <span>{visual.items.length} changes</span>
               {visual.shown && (
                 <button
                   aria-expanded={reviewPanelOpen}
@@ -1206,12 +1225,12 @@ export function PdfPreview() {
           </Popover>
         </div>
       </div>
-      {visual.metadata.state === "preparing" && (
+      {visualChangeReports && visual.metadata.state === "preparing" && (
         <p className="px-3 text-xs" role="status">
           Preparing visual changes…
         </p>
       )}
-      {visual.metadata.error && (
+      {visualChangeReports && visual.metadata.error && (
         <p className="px-3 text-xs" role="status">
           {visual.metadata.error}
           <br />

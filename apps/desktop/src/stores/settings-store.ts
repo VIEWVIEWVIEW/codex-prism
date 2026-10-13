@@ -5,6 +5,8 @@ import { persist } from "zustand/middleware";
 interface SettingsState {
   autoRecompile: boolean;
   setAutoRecompile: (enabled: boolean) => void;
+  visualChangeReports: boolean;
+  setVisualChangeReports: (enabled: boolean) => void;
   vimMode: boolean;
   setVimMode: (enabled: boolean) => void;
   editorFontSize: number;
@@ -16,6 +18,9 @@ export const useSettingsStore = create<SettingsState>()(
     (set) => ({
       autoRecompile: false,
       setAutoRecompile: (enabled) => set({ autoRecompile: enabled }),
+      visualChangeReports: false,
+      setVisualChangeReports: (enabled) =>
+        set({ visualChangeReports: enabled }),
       vimMode: false,
       setVimMode: (enabled) => set({ vimMode: enabled }),
       editorFontSize: 14,
@@ -30,8 +35,14 @@ export const useSettingsStore = create<SettingsState>()(
         ...current,
         ...settingsPreferences(persisted),
       }),
-      partialize: ({ autoRecompile, vimMode, editorFontSize }) => ({
+      partialize: ({
         autoRecompile,
+        visualChangeReports,
+        vimMode,
+        editorFontSize,
+      }) => ({
+        autoRecompile,
+        visualChangeReports,
         vimMode,
         editorFontSize,
       }),
@@ -50,6 +61,7 @@ export function settingsPreferences(value: unknown) {
   const state = (value ?? {}) as Record<string, unknown>;
   return {
     autoRecompile: state.autoRecompile === true,
+    visualChangeReports: state.visualChangeReports === true,
     vimMode: state.vimMode === true,
     editorFontSize: normalizeFontSize(state.editorFontSize),
   };

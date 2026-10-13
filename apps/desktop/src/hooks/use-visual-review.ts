@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useAgentChatStore } from "@/stores/agent-chat-store";
 import { useDocumentStore } from "@/stores/document-store";
+import { useSettingsStore } from "@/stores/settings-store";
 import {
   visualBackend,
   type VisualItem,
@@ -13,6 +14,7 @@ import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
 import { createLogger } from "@/lib/debug/logger";
 const log = createLogger("visual-review");
 export function useVisualReview(main?: string) {
+  const enabled = useSettingsStore((s) => s.visualChangeReports);
   const documentProject = useDocumentStore((s) => s.projectId);
   const project = useAgentChatStore((s) => s.projectId);
   const review = useAgentChatStore((s) => s.review);
@@ -37,6 +39,12 @@ export function useVisualReview(main?: string) {
     setMetadata({ state: "preparing" });
     const client = getMupdfClient();
     async function prepare() {
+      if (!enabled) {
+        lastOpened.current = "";
+        setShown(false);
+        setMetadata({ state: "unavailable" });
+        return;
+      }
       const changes = review.changes.filter(
         (change) => !change.path.toLowerCase().endsWith(".pdf"),
       );
@@ -187,10 +195,18 @@ export function useVisualReview(main?: string) {
       for (const id of opened) void client.closeDocument(id);
       opened = [];
     };
-  }, [project, documentProject, review, main, contentGeneration, pdfRevision]);
+  }, [
+    enabled,
+    project,
+    documentProject,
+    review,
+    main,
+    contentGeneration,
+    pdfRevision,
+  ]);
   // Detect external edits even while no review events arrive; never retain old geometry.
   useEffect(() => {
-    if (!project || metadata.state !== "ready") return;
+    if (!enabled || !project || metadata.state !== "ready") return;
     let alive = true;
     const timer = setInterval(() => {
       void visualBackend
@@ -208,7 +224,7 @@ export function useVisualReview(main?: string) {
       alive = false;
       clearInterval(timer);
     };
-  }, [project, metadata.state]);
+  }, [enabled, project, metadata.state]);
   return {
     metadata,
     items,
@@ -219,6 +235,7 @@ export function useVisualReview(main?: string) {
     bytes,
     docs,
     active:
+      enabled &&
       shown &&
       !review.active &&
       project === documentProject &&

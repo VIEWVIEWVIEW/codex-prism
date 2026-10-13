@@ -39,8 +39,24 @@ def tick():
    data=json.loads(value)
    if data['ready'] and (keep or data['autoCompiled']):
     assert 'Original passage' in data['text'] and 'Updated passage' in data['text'],data
-    print('report ready, PDF excerpts and highlights present' + ('; Auto disabled' if keep else '; Auto compiled pending agent edits'),flush=True);stage=3
+    print('report ready, PDF excerpts and highlights present' + ('; Auto disabled' if keep else '; Auto compiled pending agent edits'),flush=True);stage=12
   evaluate("({ready:!!document.querySelector('[aria-label=\"Visual changes\"] article')&&!!document.querySelector('[aria-label^=\"Change 1:\"]'),autoCompiled:window.smoke.autoCompiledPendingReview(),text:document.body.innerText,error:window.smokeError})",report)
+ elif stage==12:
+  def adjacent(value):
+   global stage
+   assert value=='true','Changes switch must be next to Auto'
+   stage=13
+  evaluate("(()=>{const toggle=document.querySelector('[aria-label=\"Visual change reports\"]');const adjacent=toggle.previousElementSibling?.getAttribute('aria-label')==='Auto-recompile';toggle.click();return adjacent})()",adjacent)
+ elif stage==13:
+  def hidden(value):
+   global stage
+   if value=='true':stage=14
+  evaluate("(()=>{const toggle=document.querySelector('[aria-label=\"Visual change reports\"]');if(toggle.getAttribute('aria-checked')!=='false'||document.querySelector('[aria-label=\"Visual changes\"] article')||document.querySelector('[aria-label^=\"Change 1:\"]'))return false;toggle.click();return true})()",hidden)
+ elif stage==14:
+  def reopened(value):
+   global stage
+   if value=='true':print('Changes switch hides and reopens the visual report',flush=True);stage=3
+  evaluate("Boolean(document.querySelector('[aria-label=\"Visual changes\"] article')&&document.querySelector('[aria-label^=\"Change 1:\"]'))",reopened)
  elif stage==3:
   evaluate("Array.from(document.querySelectorAll('button')).find(b=>b.textContent.includes('Show rendered crops')).click();true",lambda v:None);stage=4
  elif stage==4:

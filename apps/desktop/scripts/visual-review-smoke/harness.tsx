@@ -44,6 +44,7 @@ useAgentChatStore.setState({
   review: { active: false, changes: [] },
 });
 useSettingsStore.setState({
+  visualChangeReports: true,
   autoRecompile: new URLSearchParams(location.search).get("auto") !== "off",
 });
 (window as any).smoke = {

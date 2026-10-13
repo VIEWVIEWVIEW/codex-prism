@@ -1,6 +1,7 @@
 import { beforeEach, describe, it, expect, vi } from "vitest";
 import { useAgentChatStore } from "@/stores/agent-chat-store";
 import { useDocumentStore } from "@/stores/document-store";
+import { useSettingsStore } from "@/stores/settings-store";
 import { backend } from "@/lib/backend";
 import { compileLatex, resolveCompileTarget } from "@/lib/latex-compiler";
 vi.mock("@/lib/backend", () => ({
@@ -23,6 +24,7 @@ vi.mock("@/lib/backend", () => ({
 vi.mock("@/stores/document-store", () => ({
   useDocumentStore: { getState: vi.fn() },
   getCurrentPdfRootId: vi.fn(() => "main.tex"),
+  resolveTexRoot: vi.fn(() => "main.tex"),
 }));
 vi.mock("@/lib/latex-compiler", () => ({
   resolveCompileTarget: vi.fn(() => null),
@@ -32,6 +34,7 @@ vi.mock("@/lib/latex-compiler", () => ({
 const save = vi.fn(async () => {});
 beforeEach(() => {
   vi.clearAllMocks();
+  useSettingsStore.setState({ visualChangeReports: true });
   vi.mocked(useDocumentStore.getState).mockReturnValue({
     projectRoot: "/paper",
     projectId: "p1",
@@ -127,6 +130,26 @@ describe("compilation after accepting review changes", () => {
   });
 });
 describe("Codex turn lifecycle", () => {
+  it.each([
+    true,
+    false,
+  ])("requests visual artifacts only when reports are enabled (%s)", async (enabled) => {
+    useSettingsStore.getState().setVisualChangeReports(enabled);
+    Object.assign(useDocumentStore.getState(), {
+      files: [
+        {
+          id: "main.tex",
+          relativePath: "main.tex",
+          type: "tex",
+          isDirty: false,
+        },
+      ],
+    });
+    await useAgentChatStore.getState().sendPrompt("Edit paragraph");
+    expect(vi.mocked(backend.agent.send).mock.calls[0][6]).toBe(
+      enabled ? "main.tex" : undefined,
+    );
+  });
   it("saves before starting and carries project identity across the boundary", async () => {
     await useAgentChatStore.getState().sendPrompt("Fix equations");
     expect(save).toHaveBeenCalledOnce();

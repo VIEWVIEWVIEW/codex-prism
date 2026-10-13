@@ -1,5 +1,6 @@
 import { coalescedRefresh } from "@/lib/coalesced-refresh";
 import { create } from "zustand";
+import { useSettingsStore } from "./settings-store";
 import { backend, type AgentEvent, type Review } from "@/lib/backend";
 import {
   resolveTexRoot,
@@ -356,13 +357,15 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
         state.selectedModel,
         state.effortLevel,
         attachments.flatMap((a) => (a.imageDataUrl ? [a.imageDataUrl] : [])),
-        doc.files.find(
-          (f) =>
-            f.id ===
-            (active?.type === "tex"
-              ? resolveTexRoot(active.id, doc.files)
-              : getCurrentPdfRootId()),
-        )?.relativePath,
+        useSettingsStore.getState().visualChangeReports
+          ? doc.files.find(
+              (f) =>
+                f.id ===
+                (active?.type === "tex"
+                  ? resolveTexRoot(active.id, doc.files)
+                  : getCurrentPdfRootId()),
+            )?.relativePath
+          : undefined,
       );
       set((s) => ({
         tabs: s.tabs.map((x) =>
