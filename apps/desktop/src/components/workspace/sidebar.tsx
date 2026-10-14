@@ -15,7 +15,6 @@ import {
   MoonIcon,
   MonitorIcon,
   ListIcon,
-  HashIcon,
   GithubIcon,
   PanelLeftIcon,
   ChevronRightIcon,
@@ -45,6 +44,7 @@ import { useTheme } from "next-themes";
 import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
 import { useHistoryStore } from "@/stores/history-store";
 import { cn } from "@/lib/utils";
+import { parseTableOfContents } from "@/lib/latex-outline";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -83,40 +83,6 @@ import { createLogger } from "@/lib/debug/logger";
 const log = createLogger("sidebar");
 const FILES_AUTO_REFRESH_INTERVAL_MS = 12_000;
 const FILES_REFRESH_MIN_SPIN_MS = 400;
-
-// ─── Table of Contents ───
-
-interface TocItem {
-  level: number;
-  title: string;
-  line: number;
-}
-
-function parseTableOfContents(content: string): TocItem[] {
-  const lines = content.split("\n");
-  const toc: TocItem[] = [];
-  const sectionRegex =
-    /\\(section|subsection|subsubsection|chapter|part)\*?\s*\{([^}]*)\}/;
-  const levelMap: Record<string, number> = {
-    part: 0,
-    chapter: 1,
-    section: 2,
-    subsection: 3,
-    subsubsection: 4,
-  };
-  lines.forEach((line, index) => {
-    const match = line.match(sectionRegex);
-    if (match) {
-      const [, type, title] = match;
-      toc.push({
-        level: levelMap[type] ?? 2,
-        title: title.trim(),
-        line: index + 1,
-      });
-    }
-  });
-  return toc;
-}
 
 // ─── File Tree Builder ───
 
@@ -1428,11 +1394,15 @@ export function Sidebar({
                         key={index}
                         className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-sidebar-accent/50"
                         style={{
-                          paddingLeft: `${(item.level - 1) * 12 + 8}px`,
+                          paddingLeft: `${Math.max(0, item.level - 1) * 12 + 8}px`,
                         }}
                         onClick={() => handleTocClick(item.line)}
                       >
-                        <HashIcon className="size-3 shrink-0 text-muted-foreground" />
+                        {item.number && (
+                          <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                            {item.number}
+                          </span>
+                        )}
                         <span className="truncate">{item.title}</span>
                       </button>
                     ))
