@@ -1,3 +1,4 @@
+import { boundedRenderScale } from "./render-budget";
 import { renderedRegions } from "../visual-regions";
 import type { SourceBox, Region } from "../visual-review";
 import type { StructuredTextData } from "./types";
@@ -64,11 +65,12 @@ methods.getPageSize = (
 ): { width: number; height: number } => {
   const doc = documentMap.get(docId)!;
   const page = doc.loadPage(pageIndex);
-  const bounds = page.getBounds();
-  return {
-    width: bounds[2] - bounds[0],
-    height: bounds[3] - bounds[1],
-  };
+  try {
+    const bounds = page.getBounds();
+    return { width: bounds[2] - bounds[0], height: bounds[3] - bounds[1] };
+  } finally {
+    page.destroy();
+  }
 };
 
 methods.getAllPageSizes = (
@@ -79,11 +81,15 @@ methods.getAllPageSizes = (
   const sizes: { width: number; height: number }[] = [];
   for (let i = 0; i < count; i++) {
     const page = doc.loadPage(i);
-    const bounds = page.getBounds();
-    sizes.push({
-      width: bounds[2] - bounds[0],
-      height: bounds[3] - bounds[1],
-    });
+    try {
+      const bounds = page.getBounds();
+      sizes.push({
+        width: bounds[2] - bounds[0],
+        height: bounds[3] - bounds[1],
+      });
+    } finally {
+      page.destroy();
+    }
   }
   return sizes;
 };
@@ -95,23 +101,38 @@ methods.drawPage = (
 ): ImageData => {
   const doc = documentMap.get(docId)!;
   const page = doc.loadPage(pageIndex);
-  const scale = dpi / 72;
-  const matrix = mupdf.Matrix.scale(scale, scale);
-  // alpha=false so the PDF's white background is rendered opaquely (RGB, 3 bytes/pixel)
-  const pixmap = page.toPixmap(matrix, mupdf.ColorSpace.DeviceRGB, false, true);
-  const w = pixmap.getWidth();
-  const h = pixmap.getHeight();
-  const rgb = pixmap.getPixels();
-  pixmap.destroy();
-  // Convert RGB (3 bytes/pixel) → RGBA (4 bytes/pixel) for ImageData
-  const rgba = new Uint8ClampedArray(w * h * 4);
-  for (let i = 0, j = 0; i < rgb.length; i += 3, j += 4) {
-    rgba[j] = rgb[i];
-    rgba[j + 1] = rgb[i + 1];
-    rgba[j + 2] = rgb[i + 2];
-    rgba[j + 3] = 255; // fully opaque
+  try {
+    const bounds = page.getBounds();
+    const scale = boundedRenderScale(
+      bounds[2] - bounds[0],
+      bounds[3] - bounds[1],
+      dpi / 72,
+    );
+    const pixmap = page.toPixmap(
+      mupdf.Matrix.scale(scale, scale),
+      mupdf.ColorSpace.DeviceRGB,
+      false,
+      true,
+    );
+    try {
+      const w = pixmap.getWidth();
+      const h = pixmap.getHeight();
+      // getPixels() is a view into WASM memory: copy before destroying pixmap.
+      const rgb = pixmap.getPixels();
+      const rgba = new Uint8ClampedArray(w * h * 4);
+      for (let i = 0, j = 0; i < rgb.length; i += 3, j += 4) {
+        rgba[j] = rgb[i];
+        rgba[j + 1] = rgb[i + 1];
+        rgba[j + 2] = rgb[i + 2];
+        rgba[j + 3] = 255;
+      }
+      return new ImageData(rgba, w, h);
+    } finally {
+      pixmap.destroy();
+    }
+  } finally {
+    page.destroy();
   }
-  return new ImageData(rgba, w, h);
 };
 
 methods.getPageText = (docId: number, pageIndex: number): unknown => {
@@ -183,36 +204,41 @@ methods.getPageLinks = (docId: number, pageIndex: number): unknown[] => {
   const doc = documentMap.get(docId)!;
   const page = doc.loadPage(pageIndex);
   const links = page.getLinks();
-  return links.map((link: any) => {
-    const bounds = link.getBounds();
-    const uri: string = link.getURI() || "";
-    const isExternal: boolean = link.isExternal?.() ?? uri.startsWith("http");
-    let href: string;
-    if (isExternal) {
-      href = uri;
-    } else {
-      try {
-        const resolved = doc.resolveLink(uri) as any;
-        if (typeof resolved === "number") {
-          href = `#page=${resolved + 1}`;
-        } else if (resolved && typeof resolved.page === "number") {
-          href = `#page=${resolved.page + 1}`;
-        } else {
+  try {
+    return links.map((link: any) => {
+      const bounds = link.getBounds();
+      const uri: string = link.getURI() || "";
+      const isExternal: boolean = link.isExternal?.() ?? uri.startsWith("http");
+      let href: string;
+      if (isExternal) {
+        href = uri;
+      } else {
+        try {
+          const resolved = doc.resolveLink(uri) as any;
+          if (typeof resolved === "number") {
+            href = `#page=${resolved + 1}`;
+          } else if (resolved && typeof resolved.page === "number") {
+            href = `#page=${resolved.page + 1}`;
+          } else {
+            href = uri;
+          }
+        } catch {
           href = uri;
         }
-      } catch {
-        href = uri;
       }
-    }
-    return {
-      x: bounds[0],
-      y: bounds[1],
-      w: bounds[2] - bounds[0],
-      h: bounds[3] - bounds[1],
-      href,
-      isExternal,
-    };
-  });
+      return {
+        x: bounds[0],
+        y: bounds[1],
+        w: bounds[2] - bounds[0],
+        h: bounds[3] - bounds[1],
+        href,
+        isExternal,
+      };
+    });
+  } finally {
+    for (const link of links) link.destroy();
+    page.destroy();
+  }
 };
 
 methods.renderThumbnail = (
@@ -222,15 +248,27 @@ methods.renderThumbnail = (
 ): ArrayBuffer => {
   const doc = documentMap.get(docId)!;
   const page = doc.loadPage(pageIndex);
-  const bounds = page.getBounds();
-  const pageWidth = bounds[2] - bounds[0];
-  const retinaScale = 2;
-  const scale = (targetWidth * retinaScale) / pageWidth;
-  const matrix = mupdf.Matrix.scale(scale, scale);
-  const pixmap = page.toPixmap(matrix, mupdf.ColorSpace.DeviceRGB, false, true);
-  const png = pixmap.asPNG();
-  pixmap.destroy();
-  return png.buffer as ArrayBuffer;
+  try {
+    const bounds = page.getBounds();
+    const scale = boundedRenderScale(
+      bounds[2] - bounds[0],
+      bounds[3] - bounds[1],
+      (targetWidth * 2) / (bounds[2] - bounds[0]),
+    );
+    const pixmap = page.toPixmap(
+      mupdf.Matrix.scale(scale, scale),
+      mupdf.ColorSpace.DeviceRGB,
+      false,
+      true,
+    );
+    try {
+      return pixmap.asPNG().slice().buffer as ArrayBuffer;
+    } finally {
+      pixmap.destroy();
+    }
+  } finally {
+    page.destroy();
+  }
 };
 
 methods.reviewRegions = (docId: number, boxes: SourceBox[]) => {

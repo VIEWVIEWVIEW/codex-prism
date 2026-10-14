@@ -48,6 +48,8 @@ export const MupdfPage = memo(function MupdfPage({
   const [links, setLinks] = useState<LinkData[]>([]);
   const [renderScale, setRenderScale] = useState(scale);
   const renderGenRef = useRef(0);
+  const renderingRef = useRef(false);
+  const queuedRenderRef = useRef<(() => void) | null>(null);
 
   const cssW = pageWidth * scale;
   const cssH = pageHeight * scale;
@@ -69,6 +71,11 @@ export const MupdfPage = memo(function MupdfPage({
   const renderPage = useCallback(() => {
     if (!isVisible || docId <= 0) return;
 
+    if (renderingRef.current) {
+      queuedRenderRef.current = renderPage;
+      return;
+    }
+    renderingRef.current = true;
     const gen = ++renderGenRef.current;
     const client = getMupdfClient();
     const dpr = window.devicePixelRatio || 1;
@@ -80,13 +87,13 @@ export const MupdfPage = memo(function MupdfPage({
         if (gen !== renderGenRef.current) return;
         const canvas = canvasRef.current;
         if (!canvas) return;
-        canvas.width = imageData.width;
-        canvas.height = imageData.height;
         const bitmap = await createImageBitmap(imageData);
         if (gen !== renderGenRef.current) {
           bitmap.close();
           return;
         }
+        canvas.width = imageData.width;
+        canvas.height = imageData.height;
         const ctx = canvas.getContext("2d")!;
         ctx.drawImage(bitmap, 0, 0);
         bitmap.close();
@@ -94,13 +101,27 @@ export const MupdfPage = memo(function MupdfPage({
       .catch((err) => {
         if (gen !== renderGenRef.current) return;
         log.error(`Render error page ${pageIndex}`, { error: String(err) });
+      })
+      .finally(() => {
+        renderingRef.current = false;
+        const next = queuedRenderRef.current;
+        queuedRenderRef.current = null;
+        next?.();
       });
   }, [docId, pageIndex, renderScale, isVisible]);
 
   // Render the canvas immediately on load, then at debounced high-quality zoom.
   useEffect(() => {
-    if (!isVisible || docId <= 0) return;
-    renderPage();
+    if (isVisible && docId > 0) renderPage();
+    else if (canvasRef.current) {
+      // CSS preserves page geometry; release the offscreen GPU bitmap.
+      canvasRef.current.width = 0;
+      canvasRef.current.height = 0;
+    }
+    return () => {
+      renderGenRef.current++;
+      queuedRenderRef.current = null;
+    };
   }, [docId, pageIndex, renderScale, isVisible, renderPage]);
 
   // Text and link layers do not need to be refetched for every zoom change.

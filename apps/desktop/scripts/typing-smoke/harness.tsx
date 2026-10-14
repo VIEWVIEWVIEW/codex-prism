@@ -134,3 +134,62 @@ createRoot(document.getElementById("root")!).render(
     </div>
   </div>,
 );
+
+(window as any).typingSmoke.pdfStress = async () => {
+  const sleep = (ms: number) =>
+    new Promise((resolve) => setTimeout(resolve, ms));
+  const waitFor = async (test: () => boolean) => {
+    const deadline = performance.now() + 15_000;
+    while (!test()) {
+      if (performance.now() > deadline)
+        throw new Error("PDF render did not finish");
+      await sleep(50);
+    }
+  };
+  await waitFor(() => !!document.querySelector(".mupdf-page canvas"));
+  const pages = Array.from(
+    document.querySelectorAll<HTMLElement>(".mupdf-page"),
+  );
+  const viewer = pages[0].parentElement!.parentElement!;
+  const firstCanvas = pages[0].querySelector("canvas")!;
+  await waitFor(() => firstCanvas.width > 0);
+  const rect = viewer.getBoundingClientRect();
+  // A burst must update layout once per animation frame, then rasterize only
+  // the latest zoom. 400% display zoom still has a bounded bitmap allocation.
+  for (let i = 0; i < 40; i++)
+    viewer.dispatchEvent(
+      new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        ctrlKey: true,
+        deltaY: -100,
+        clientX: rect.left + 80,
+        clientY: rect.top + 80,
+      }),
+    );
+  await sleep(700);
+  let peakPixels = 0;
+  for (const index of [0, Math.floor(pages.length / 2), pages.length - 1, 0]) {
+    pages[index].scrollIntoView({ block: "start" });
+    const canvas = pages[index].querySelector("canvas")!;
+    await waitFor(() => canvas.width > 0);
+    await sleep(500);
+    const canvases = pages.map((p) => p.querySelector("canvas")!);
+    for (const bitmap of canvases) {
+      if (bitmap.width * bitmap.height > 4_020_000)
+        throw new Error("Unbounded page bitmap");
+    }
+    peakPixels = Math.max(
+      peakPixels,
+      canvases.reduce((n, c) => n + c.width * c.height, 0),
+    );
+    if (index === pages.length - 1 && firstCanvas.width !== 0)
+      throw new Error("Offscreen bitmap retained");
+  }
+  return {
+    pdfStress: true,
+    pages: pages.length,
+    peakRasterMiB: Math.round((peakPixels * 4) / 1024 / 1024),
+    offscreenReleased: true,
+  };
+};

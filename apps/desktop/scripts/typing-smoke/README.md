@@ -22,3 +22,7 @@ Then on Linux with GTK 3 and WebKit2GTK 4.1 Python bindings installed:
 To also exercise an unchanged PDF preview, copy a test PDF to `fixture.pdf` in
 this directory (ignored by Git) and pass `--pdf`. Run timings without concurrent
 builds/tests. Restart the server after source changes if watching is disabled.
+
+Use `--stress` (requires `fixture.pdf`) to exercise rapid wheel zoom and repeated
+jumps between the first, middle, and last PDF pages. It verifies per-page bitmap
+limits, offscreen canvas release, and rendering again when returning to a page.

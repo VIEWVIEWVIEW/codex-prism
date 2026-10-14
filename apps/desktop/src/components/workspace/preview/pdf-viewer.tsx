@@ -846,6 +846,8 @@ export const PdfViewer = memo(function PdfViewer({
     const container = containerRef.current;
     if (!container || !onScaleChange) return;
 
+    let frame: number | null = null;
+    let pending: { scale: number; x: number; y: number } | null = null;
     const handleWheel = (e: WheelEvent) => {
       if (!isModifiedZoomWheel(e) || !isWheelInsidePdfViewer(e, container)) {
         return;
@@ -861,7 +863,18 @@ export const PdfViewer = memo(function PdfViewer({
       );
       const factor = getWheelZoomFactor(e, isTrackpadPinch);
       if (Math.abs(factor - 1) < 0.0001) return;
-      zoomAtPoint(scaleRef.current * factor, e.clientX, e.clientY);
+      pending = {
+        scale: clampPdfScale((pending?.scale ?? scaleRef.current) * factor),
+        x: e.clientX,
+        y: e.clientY,
+      };
+      if (frame === null)
+        frame = requestAnimationFrame(() => {
+          frame = null;
+          const target = pending;
+          pending = null;
+          if (target) zoomAtPoint(target.scale, target.x, target.y);
+        });
     };
 
     window.addEventListener("wheel", handleWheel, {
@@ -869,6 +882,8 @@ export const PdfViewer = memo(function PdfViewer({
     });
     return () => {
       window.removeEventListener("wheel", handleWheel);
+      if (frame !== null) cancelAnimationFrame(frame);
+      pending = null;
       pendingZoomScrollRef.current = null;
     };
   }, [onScaleChange, zoomAtPoint]);
@@ -1248,7 +1263,7 @@ export const PdfViewer = memo(function PdfViewer({
             scale={scale}
             pageWidth={size.width}
             pageHeight={size.height}
-            isVisible={visiblePages.has(i + 1)}
+            isVisible={isActive && visiblePages.has(i + 1)}
           />
         ))}
       </div>
