@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useRef,
   useEffect,
@@ -222,7 +223,7 @@ interface PdfViewerProps {
   onCancelCapture?: () => void;
 }
 
-export function PdfViewer({
+export const PdfViewer = memo(function PdfViewer({
   data,
   artifactId,
   selectedRegion,
@@ -1240,4 +1241,4 @@ export function PdfViewer({
       )}
     </div>
   );
-}
+});

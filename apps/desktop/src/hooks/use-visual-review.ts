@@ -19,7 +19,13 @@ export function useVisualReview(main?: string) {
   const project = useAgentChatStore((s) => s.projectId);
   const review = useAgentChatStore((s) => s.review);
   const pdfRevision = useDocumentStore((s) => s.pdfRevision);
-  const contentGeneration = useDocumentStore((s) => s.contentGeneration);
+  const tracksChanges = enabled && review.changes.length > 0;
+  const dirty = useDocumentStore(
+    (s) => tracksChanges && s.files.some((file) => file.isDirty),
+  );
+  const contentGeneration = useDocumentStore((s) =>
+    tracksChanges && !dirty ? s.contentGeneration : 0,
+  );
   const [metadata, setMetadata] = useState<VisualMetadata>({
     state: "unavailable",
   });
@@ -37,7 +43,6 @@ export function useVisualReview(main?: string) {
     docs.current = null;
     setItems([]);
     setMetadata({ state: "preparing" });
-    const client = getMupdfClient();
     async function prepare() {
       if (!enabled) {
         lastOpened.current = "";
@@ -57,6 +62,13 @@ export function useVisualReview(main?: string) {
         setMetadata({ state: review.active ? "preparing" : "unavailable" });
         return;
       }
+      // Unsaved edits cannot match a report's immutable source revision.
+      // Hide stale geometry immediately, without reloading PDFs on every key.
+      if (dirty) {
+        setMetadata({ state: "stale" });
+        return;
+      }
+      const client = getMupdfClient();
       const started = performance.now();
       const m = await visualBackend.report(project);
       if (abort.signal.aborted) return;
@@ -192,7 +204,7 @@ export function useVisualReview(main?: string) {
       abort.abort();
       bytes.current = null;
       docs.current = null;
-      for (const id of opened) void client.closeDocument(id);
+      for (const id of opened) void getMupdfClient().closeDocument(id);
       opened = [];
     };
   }, [
@@ -202,6 +214,7 @@ export function useVisualReview(main?: string) {
     review,
     main,
     contentGeneration,
+    dirty,
     pdfRevision,
   ]);
   // Detect external edits even while no review events arrive; never retain old geometry.

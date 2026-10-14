@@ -108,7 +108,6 @@ export function PdfPreview() {
   const setPdfData = useDocumentStore((s) => s.setPdfData);
   const setCompileError = useDocumentStore((s) => s.setCompileError);
   const setIsCompiling = useDocumentStore((s) => s.setIsCompiling);
-  const content = useDocumentStore((s) => s.content);
   const projectRoot = useDocumentStore((s) => s.projectRoot);
   const files = useDocumentStore((s) => s.files);
   const saveAllFiles = useDocumentStore((s) => s.saveAllFiles);
@@ -237,6 +236,10 @@ export function PdfPreview() {
 
   const handleTextClick = useCallback(
     (text: string) => {
+      const state = useDocumentStore.getState();
+      const content =
+        state.files.find((file) => file.id === state.activeFileId)?.content ??
+        "";
       let index = content.indexOf(text);
       if (index === -1) {
         const cleanText = text.replace(/[{}\\$]/g, "");
@@ -251,7 +254,7 @@ export function PdfPreview() {
       }
       if (index !== -1) requestJumpToPosition(index);
     },
-    [content, requestJumpToPosition],
+    [requestJumpToPosition],
   );
 
   const handleSynctexClick = useCallback(
@@ -263,9 +266,9 @@ export function PdfPreview() {
       const normalize = (p: string) =>
         p.replace(/\\/g, "/").replace(/^\.\//, "");
       const normalizedTarget = normalize(result.file);
-      const targetFile = files.find(
-        (f) => normalize(f.relativePath) === normalizedTarget,
-      );
+      const targetFile = useDocumentStore
+        .getState()
+        .files.find((f) => normalize(f.relativePath) === normalizedTarget);
       if (!targetFile) return;
 
       const state = useDocumentStore.getState();
@@ -294,7 +297,7 @@ export function PdfPreview() {
         requestJumpToPosition(offset);
       }
     },
-    [projectRoot, files, setActiveFile, requestJumpToPosition],
+    [projectRoot, setActiveFile, requestJumpToPosition],
   );
 
   // Resolved source location from synctex
@@ -594,11 +597,19 @@ export function PdfPreview() {
     }
   }, [pageInputValue, numPages, currentPage, goToPage]);
 
-  const handleLoadSuccess = (pages: number) => setNumPages(pages);
-  const handleScaleChange = (newScale: number) => {
+  const handleLoadSuccess = useCallback(
+    (pages: number) => setNumPages(pages),
+    [],
+  );
+  const handleFirstPageSize = useCallback(
+    (width: number, height: number) => setFirstPageSize({ width, height }),
+    [],
+  );
+  const handleCancelCapture = useCallback(() => setCaptureMode(false), []);
+  const handleScaleChange = useCallback((newScale: number) => {
     setFitMode(null);
     setScale(newScale);
-  };
+  }, []);
 
   const handleCompile = async (force = false, automatic = false) => {
     // Read all guard values from the store to avoid stale closures
@@ -673,38 +684,41 @@ export function PdfPreview() {
     compile: () => handleCompile(true, true),
   });
 
-  const handleCapture = async (result: CaptureResult) => {
-    setCaptureMode(false);
-    if (!projectRoot) return;
+  const handleCapture = useCallback(
+    async (result: CaptureResult) => {
+      setCaptureMode(false);
+      if (!projectRoot) return;
 
-    const fileName = `capture-p${result.pageNumber}-${Date.now()}.png`;
-    const relativePath = `attachments/${fileName}`;
+      const fileName = `capture-p${result.pageNumber}-${Date.now()}.png`;
+      const relativePath = `attachments/${fileName}`;
 
-    try {
-      const project = await backend.projects.register(projectRoot);
+      try {
+        const project = await backend.projects.register(projectRoot);
 
-      const base64 = result.dataUrl.split(",")[1];
-      const binary = atob(base64);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      await backend.files.write(
-        { projectId: project.id, path: relativePath },
-        [...bytes],
-        null,
-      );
+        const base64 = result.dataUrl.split(",")[1];
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        await backend.files.write(
+          { projectId: project.id, path: relativePath },
+          [...bytes],
+          null,
+        );
 
-      await useDocumentStore.getState().refreshFiles();
+        await useDocumentStore.getState().refreshFiles();
 
-      useAgentChatStore.getState().addPendingAttachment({
-        label: `@${relativePath}`,
-        filePath: relativePath,
-        selectedText: `[Captured region from PDF page ${result.pageNumber}]`,
-        imageDataUrl: result.dataUrl,
-      });
-    } catch (err) {
-      log.error("Capture failed to save", { error: String(err) });
-    }
-  };
+        useAgentChatStore.getState().addPendingAttachment({
+          label: `@${relativePath}`,
+          filePath: relativePath,
+          selectedText: `[Captured region from PDF page ${result.pageNumber}]`,
+          imageDataUrl: result.dataUrl,
+        });
+      } catch (err) {
+        log.error("Capture failed to save", { error: String(err) });
+      }
+    },
+    [projectRoot],
+  );
 
   // Listen for global Capture & Ask shortcut (Cmd+X / Ctrl+X)
   useEffect(() => {
@@ -904,11 +918,7 @@ export function PdfPreview() {
                   onTextClick={isActive ? handleTextClick : undefined}
                   onSynctexClick={isActive ? handleSynctexClick : undefined}
                   onTextSelect={isActive ? handleTextSelect : undefined}
-                  onFirstPageSize={
-                    isActive
-                      ? (w, h) => setFirstPageSize({ width: w, height: h })
-                      : undefined
-                  }
+                  onFirstPageSize={isActive ? handleFirstPageSize : undefined}
                   onContainerResize={
                     isActive ? handleContainerResize : undefined
                   }
@@ -918,9 +928,7 @@ export function PdfPreview() {
                   scrollToPageRef={isActive ? scrollToPageRef : undefined}
                   captureMode={isActive ? captureMode : false}
                   onCapture={isActive ? handleCapture : undefined}
-                  onCancelCapture={
-                    isActive ? () => setCaptureMode(false) : undefined
-                  }
+                  onCancelCapture={isActive ? handleCancelCapture : undefined}
                 />
               </div>
             </ErrorBoundary>

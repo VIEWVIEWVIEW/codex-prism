@@ -44,7 +44,8 @@ import { useTheme } from "next-themes";
 import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
 import { useHistoryStore } from "@/stores/history-store";
 import { cn } from "@/lib/utils";
-import { parseTableOfContents } from "@/lib/latex-outline";
+import { createFileMetadataSelector } from "@/lib/file-metadata-selector";
+import { DocumentOutline } from "./document-outline";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -392,7 +393,8 @@ export function Sidebar({
   layoutControls,
 }: SidebarProps) {
   const appVersion = useAppVersion();
-  const files = useDocumentStore((s) => s.files);
+  const selectFileMetadata = useMemo(createFileMetadataSelector, []);
+  const files = useDocumentStore(selectFileMetadata);
   const activeFileId = useDocumentStore((s) => s.activeFileId);
   const setActiveFile = useDocumentStore((s) => s.setActiveFile);
   const deleteFile = useDocumentStore((s) => s.deleteFile);
@@ -402,13 +404,6 @@ export function Sidebar({
   const createNewFile = useDocumentStore((s) => s.createNewFile);
   const createFolder = useDocumentStore((s) => s.createFolder);
   const importFiles = useDocumentStore((s) => s.importFiles);
-  const activeFileContent = useDocumentStore((s) => {
-    const active = s.files.find((f) => f.id === s.activeFileId);
-    return active?.content ?? "";
-  });
-  const requestJumpToPosition = useDocumentStore(
-    (s) => s.requestJumpToPosition,
-  );
   const moveFile = useDocumentStore((s) => s.moveFile);
   const moveFolder = useDocumentStore((s) => s.moveFolder);
   const closeProject = useDocumentStore((s) => s.closeProject);
@@ -965,23 +960,6 @@ export function Sidebar({
     });
   }, []);
 
-  // Outline
-  const toc = useMemo(
-    () => parseTableOfContents(activeFileContent),
-    [activeFileContent],
-  );
-  const handleTocClick = useCallback(
-    (line: number) => {
-      const lines = activeFileContent.split("\n");
-      let position = 0;
-      for (let i = 0; i < line - 1 && i < lines.length; i++) {
-        position += lines[i].length + 1;
-      }
-      requestJumpToPosition(position);
-    },
-    [activeFileContent, requestJumpToPosition],
-  );
-
   // Check if a name already exists in the given folder
   // Case-insensitive on macOS/Windows (default case-insensitive filesystems)
   const isCaseInsensitiveFs =
@@ -1382,37 +1360,7 @@ export function Sidebar({
 
             {/* Outline */}
             <Panel defaultSize={30} minSize={10}>
-              <div className="flex h-full flex-col">
-                <div className="flex h-8 shrink-0 items-center justify-center gap-2 px-3">
-                  <ListIcon className="size-3.5 text-muted-foreground" />
-                  <span className="font-medium text-xs">Outline</span>
-                </div>
-                <div className="min-h-0 flex-1 overflow-y-auto p-1">
-                  {toc.length > 0 ? (
-                    toc.map((item, index) => (
-                      <button
-                        key={index}
-                        className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-sidebar-accent/50"
-                        style={{
-                          paddingLeft: `${Math.max(0, item.level - 1) * 12 + 8}px`,
-                        }}
-                        onClick={() => handleTocClick(item.line)}
-                      >
-                        {item.number && (
-                          <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                            {item.number}
-                          </span>
-                        )}
-                        <span className="truncate">{item.title}</span>
-                      </button>
-                    ))
-                  ) : (
-                    <div className="px-2 py-1 text-muted-foreground text-xs">
-                      No sections found
-                    </div>
-                  )}
-                </div>
-              </div>
+              <DocumentOutline key={activeFileId} />
             </Panel>
           </PanelGroup>
 
