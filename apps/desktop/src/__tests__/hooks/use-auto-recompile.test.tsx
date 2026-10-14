@@ -15,8 +15,8 @@ function render(update = {}) {
   props = { ...props, ...update };
   act(() => root.render(<Harness />));
 }
-function tick() {
-  act(() => vi.advanceTimersByTime(1000));
+function tick(milliseconds = 15_000) {
+  act(() => vi.advanceTimersByTime(milliseconds));
 }
 beforeEach(() => {
   vi.useFakeTimers();
@@ -37,15 +37,16 @@ afterEach(() => {
   act(() => root.unmount());
   vi.useRealTimers();
 });
-it("loads existing PDFs without compiling and debounces edits", () => {
+it("loads existing PDFs without compiling and waits 15 seconds after the latest edit", () => {
   tick();
   expect(compile).not.toHaveBeenCalled();
   render({ generation: 1 });
-  act(() => vi.advanceTimersByTime(500));
-  render({ generation: 2 });
-  act(() => vi.advanceTimersByTime(500));
+  tick(14_999);
   expect(compile).not.toHaveBeenCalled();
-  tick();
+  render({ generation: 2 });
+  tick(14_999);
+  expect(compile).not.toHaveBeenCalled();
+  tick(1);
   expect(compile).toHaveBeenCalledTimes(1);
 });
 it("cancels queued compilation when disabled or switching documents", () => {

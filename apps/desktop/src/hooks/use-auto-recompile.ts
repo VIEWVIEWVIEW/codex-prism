@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 
-/** Debounce edits, retain changes during compilation, and never retry an unchanged failure. */
+/** Wait for 15 seconds of inactivity, retain edits during compilation, and never retry an unchanged failure. */
 export function useAutoRecompile({
   enabled,
   documentKey,
@@ -32,7 +32,7 @@ export function useAutoRecompile({
     const timer = setTimeout(() => {
       observed.current = { documentKey, generation };
       void callback.current();
-    }, 1000);
+    }, 15_000);
     return () => clearTimeout(timer);
   }, [enabled, documentKey, generation, busy]);
 }

@@ -987,7 +987,7 @@ export function PdfPreview() {
             role="switch"
             aria-label="Auto-recompile"
             aria-checked={autoRecompile}
-            title="Automatically recompile after edits"
+            title="Automatically recompile after 15 seconds without edits"
             onClick={() => setAutoRecompile(!autoRecompile)}
           >
             <span
