@@ -1,3 +1,4 @@
+import { toast } from "sonner";
 import { coalescedRefresh } from "@/lib/coalesced-refresh";
 import { create } from "zustand";
 import { useSettingsStore } from "./settings-store";
@@ -62,6 +63,7 @@ interface ChatState {
   refreshReview(): Promise<void>;
   resolveReview(path: string | string[], undo: boolean): Promise<void>;
   keepAllReview(): Promise<void>;
+  reloadReview(): Promise<void>;
   respond(request: AgentEvent, result: unknown): Promise<void>;
   handleEvent(event: AgentEvent): void;
 }
@@ -218,6 +220,22 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
       set({ review, locked: review.active || review.changes.length > 0 });
     });
   },
+  reloadReview: async () => {
+    const id = get().projectId;
+    if (!id || get().review.active) return;
+    try {
+      const review = await backend.review.refresh(id);
+      if (get().projectId !== id) return;
+      set({
+        review,
+        locked: review.active || review.changes.length > 0,
+        error: null,
+      });
+      await useDocumentStore.getState().refreshFiles();
+    } catch (error) {
+      if (get().projectId === id) set({ error: String(error) });
+    }
+  },
   keepAllReview: async () => {
     const review = get().review;
     if (review.active) return;
@@ -232,9 +250,16 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
     if (!id || !paths.length) return;
     set({ error: null });
     try {
-      for (const file of paths) {
-        if (get().projectId !== id) return;
-        await backend.review.resolve(id, file, undo);
+      const result = await backend.review.resolveBatch(
+        id,
+        paths,
+        undo,
+        get().review.revision,
+      );
+      if (result.historyWarning && get().projectId === id) {
+        toast.warning(
+          `Changes kept, but history could not be saved: ${result.historyWarning}`,
+        );
       }
       await get().refreshReview();
       if (
@@ -385,6 +410,7 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
                   : getCurrentPdfRootId()),
             )?.relativePath
           : undefined,
+        prompt,
       );
       set((s) => ({
         tabs: s.tabs.map((x) =>

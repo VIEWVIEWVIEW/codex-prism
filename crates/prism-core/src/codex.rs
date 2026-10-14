@@ -37,6 +37,10 @@ pub struct Review {
     pub project_id: String,
     pub active: bool,
     #[serde(default)]
+    pub history_prompts: Vec<String>,
+    #[serde(default)]
+    pub history_id: String,
+    #[serde(default)]
     pub visual: Option<crate::visual_review::VisualReview>,
     pub before: BTreeMap<String, Vec<u8>>,
     pub after: BTreeMap<String, Vec<u8>>,
@@ -313,6 +317,8 @@ fn prepare_review(
     }
     Ok(Review {
         project_id: id,
+        history_prompts: vec![],
+        history_id: uuid::Uuid::new_v4().to_string(),
         visual: None,
         active: true,
         before,
@@ -321,14 +327,202 @@ fn prepare_review(
     })
 }
 
-fn confirm_review_start(app: &crate::Backend, id: &str) -> Result<(), String> {
-    let projects = &app.inner.projects;
-    let _files = projects.0.lock().map_err(|e| e.to_string())?;
+fn history_result(app: &crate::Backend, id: &str, result: Result<(), String>) {
+    let warning = result.as_ref().err().cloned();
+    if let Err(error) = result {
+        if let Ok(project) = projects::get(app, id) {
+            crate::history::workflow::warn(&project.root.to_string_lossy(), &error);
+        }
+    }
+    app.inner.events.emit(crate::BackendEvent::HistoryChanged {
+        project_id: id.into(),
+        warning,
+    });
+}
+pub(crate) fn history_baseline(
+    app: &crate::Backend,
+    id: &str,
+) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    let root = projects::get(app, id)?.root;
+    let mut inputs = crate::history::workflow::capture(&root.to_string_lossy())
+        .or_else(|_| projects::snapshot(&root))?;
     let path = review_path(app, id)?;
+    if path.exists() {
+        let r = crate::review_storage::load(&path)?;
+        let baseline = r.previous.as_deref().unwrap_or(&r);
+        for p in baseline.before.keys().chain(baseline.after.keys()) {
+            if let Some(bytes) = baseline.before.get(p) {
+                inputs.insert(p.clone(), bytes.clone());
+            } else {
+                inputs.remove(p);
+            }
+        }
+    }
+    Ok(inputs)
+}
+fn history_before_turn(app: &crate::Backend, id: &str) -> Result<(), String> {
+    let mut inputs = {
+        let _files = app.inner.projects.0.lock().map_err(|e| e.to_string())?;
+        history_baseline(app, id)?
+    };
+    let root = projects::get(app, id)?.root.to_string_lossy().to_string();
+    let had_ignore = std::path::Path::new(&root).join(".gitignore").exists();
+    crate::history::workflow::initialize(&root, Some(inputs.clone()))?;
+    if !had_ignore {
+        if let Ok(bytes) = std::fs::read(std::path::Path::new(&root).join(".gitignore")) {
+            let _files = app.inner.projects.0.lock().map_err(|e| e.to_string())?;
+            let path = review_path(app, id)?;
+            let mut review = crate::review_storage::load(&path)?;
+            inputs.insert(".gitignore".into(), bytes.clone());
+            review.before.insert(".gitignore".into(), bytes);
+            crate::review_storage::save(&path, &review)?;
+        }
+    }
+    crate::history::workflow::checkpoint(
+        &root,
+        "docs(history): checkpoint before agent turn",
+        Some(inputs),
+    )?;
+    Ok(())
+}
+fn acceptance_id(r: &Review, paths: &[String]) -> String {
+    use sha1::{Digest, Sha1};
+    let mut digest = Sha1::new();
+    for field in [&r.project_id, &r.history_id] {
+        digest.update(field.len().to_le_bytes());
+        digest.update(field.as_bytes());
+    }
+    for files in [&r.before, &r.after] {
+        digest.update(files.len().to_le_bytes());
+        for (path, bytes) in files {
+            digest.update(path.len().to_le_bytes());
+            digest.update(path.as_bytes());
+            digest.update(bytes.len().to_le_bytes());
+            digest.update(bytes);
+        }
+    }
+    for path in paths {
+        digest.update(path.len().to_le_bytes());
+        digest.update(path.as_bytes());
+    }
+    format!("{:x}", digest.finalize())
+}
+pub(crate) fn review_revision(r: &Review) -> String {
+    acceptance_id(r, &[])
+}
+fn record_acceptance(
+    app: &crate::Backend,
+    id: &str,
+    r: &Review,
+    paths: &[String],
+) -> Result<(), String> {
+    let root = projects::get(app, id)?.root.to_string_lossy().to_string();
+    let patch = paths
+        .iter()
+        .map(|p| (p.clone(), r.after.get(p).cloned()))
+        .collect();
+    crate::history::workflow::accept(&root, &acceptance_id(r, paths), patch, &r.history_prompts)?;
+    Ok(())
+}
+#[derive(Serialize, Deserialize)]
+struct AcceptanceIntent {
+    review: Review,
+    paths: Vec<String>,
+    implicit: bool,
+}
+fn intent_path(app: &crate::Backend, id: &str) -> Result<std::path::PathBuf, String> {
+    Ok(projects::data_dir(app)?.join(format!("history-accept-{id}.json")))
+}
+fn confirm_review_start(app: &crate::Backend, id: &str) -> Result<(), String> {
+    let path = review_path(app, id)?;
+    let previous = {
+        let _files = app.inner.projects.0.lock().map_err(|e| e.to_string())?;
+        if !path.exists() {
+            return Ok(());
+        }
+        let r = crate::review_storage::load(&path)?;
+        if let Some(previous) = &r.previous {
+            let mut paths: Vec<_> = previous
+                .before
+                .keys()
+                .chain(previous.after.keys())
+                .filter(|p| previous.before.get(*p) != previous.after.get(*p))
+                .cloned()
+                .collect();
+            paths.sort();
+            paths.dedup();
+            // Record acknowledged startup before retiring the previous pending review.
+            if let Err(error) = save_json(
+                &intent_path(app, id)?,
+                &AcceptanceIntent {
+                    review: (**previous).clone(),
+                    paths,
+                    implicit: true,
+                },
+            ) {
+                history_result(app, id, Err(error));
+            }
+        }
+        crate::review_storage::confirm_start(&path)?;
+        r.previous
+    };
+    if previous.is_some() {
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let worker = app.clone();
+            let id = id.to_owned();
+            let admitted = app.enter()?;
+            let task = runtime.spawn(async move {
+                let _operation = admitted;
+                let _services = worker.inner.codex.service_lock.lock().await;
+                let job = worker.clone();
+                let _ =
+                    tokio::task::spawn_blocking(move || finish_acceptance_intent(&job, &id)).await;
+            });
+            app.inner
+                .codex
+                .tasks
+                .lock()
+                .map_err(|e| e.to_string())?
+                .push(task);
+        } else {
+            finish_acceptance_intent(app, id)?;
+        }
+    }
+    Ok(())
+}
+pub(crate) fn settle_implicit_history(app: &crate::Backend, id: &str) -> Result<(), String> {
+    let path = intent_path(app, id)?;
+    if path.exists() {
+        let intent: AcceptanceIntent =
+            serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        if intent.implicit {
+            finish_acceptance_intent(app, id)?;
+        }
+    }
+    Ok(())
+}
+fn finish_acceptance_intent(app: &crate::Backend, id: &str) -> Result<(), String> {
+    let path = intent_path(app, id)?;
     if !path.exists() {
         return Ok(());
     }
-    crate::review_storage::confirm_start(&path)
+    let intent: AcceptanceIntent =
+        serde_json::from_slice(&std::fs::read(&path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    let result = record_acceptance(app, id, &intent.review, &intent.paths);
+    let recorded = result.is_ok();
+    history_result(app, id, result);
+    // Failed Git operations have their own durable immutable queue. Keep this
+    // intent too when that queue could not be written (e.g. a read-only disk).
+    let queued = projects::get(app, id)
+        .ok()
+        .and_then(|p| crate::history::workflow::status(&p.root.to_string_lossy()).ok())
+        .is_some_and(|s| s["pending"].as_u64().unwrap_or(0) > 0);
+    if recorded || queued {
+        std::fs::remove_file(path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 fn finish_review_state(r: &mut Review, after: BTreeMap<String, Vec<u8>>) {
@@ -532,6 +726,7 @@ pub(crate) async fn codex_send(
     effort: Option<String>,
     images: Option<Vec<String>>,
     main_document: Option<String>,
+    history_prompt: Option<String>,
 ) -> Result<Value, String> {
     let project = projects::get(&app, &project_id)?;
     let c = connection(&app).await?;
@@ -541,9 +736,11 @@ pub(crate) async fn codex_send(
         let worker = app.clone();
         let worker_id = project_id.clone();
         let root = project.root.clone();
+        let history_prompt = history_prompt.clone();
         let admitted = app.enter()?;
         tokio::task::spawn_blocking(move || -> Result<(), String> {
             let _operation = admitted;
+            history_result(&worker, &worker_id, settle_implicit_history(&worker, &worker_id));
             let projects = &worker.inner.projects;
             let _files = projects.0.lock().map_err(|e| e.to_string())?;
             let state = &worker.inner.codex;
@@ -554,13 +751,34 @@ pub(crate) async fn codex_send(
             } else {
                 None
             };
-            let r = prepare_review(worker_id.clone(), previous, projects::snapshot(&root)?)?;
+            let inputs = projects::snapshot(&root)?;
+            if let Some(previous) = &previous {
+                for name in previous.before.keys().chain(previous.after.keys()) {
+                    if previous.before.get(name) != previous.after.get(name) && inputs.get(name) != previous.after.get(name) && !crate::history::workflow::untracked_output(&root.to_string_lossy(), name) {
+                        return Err(format!("File changed on disk: {name}. Reload the review before starting another turn."));
+                    }
+                }
+            }
+            let mut r = prepare_review(worker_id.clone(), previous, inputs)?;
+            if crate::history::workflow::include_prompt(&root.to_string_lossy()) {
+                if let Some(prompt) = history_prompt {
+                    r.history_prompts.push(prompt);
+                }
+            }
             crate::review_storage::save(&review_path(&worker, &worker_id)?, &r)?;
             Ok(())
         })
         .await
         .map_err(|e| e.to_string())??;
     }
+    // The reservation is durable; Git work uses immutable inputs outside project locks.
+    let worker = app.clone();
+    let id = project_id.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let result = history_before_turn(&worker, &id);
+        history_result(&worker, &id, result);
+    })
+    .await;
     if let Some(main) = main_document {
         crate::visual_review::prepare(&app, &project_id, &main).await;
     }
@@ -602,7 +820,27 @@ pub(crate) async fn codex_control(
     }
     let c = connection(&app).await?;
     if let Some(text) = prompt {
-        c.call("turn/steer",json!({"threadId":thread_id,"expectedTurnId":turn_id,"input":[{"type":"text","text":text}]})).await
+        let history_id = {
+            let _files = app.inner.projects.0.lock().map_err(|e| e.to_string())?;
+            crate::review_storage::load(&review_path(&app, &project_id)?)
+                .ok()
+                .filter(|r| !r.history_prompts.is_empty())
+                .map(|r| r.history_id)
+        };
+        let result = c.call("turn/steer",json!({"threadId":thread_id,"expectedTurnId":turn_id,"input":[{"type":"text","text":text}]})).await?;
+        if let Some(history_id) = history_id {
+            let _files = app.inner.projects.0.lock().map_err(|e| e.to_string())?;
+            let path = review_path(&app, &project_id)?;
+            if let Ok(mut r) = crate::review_storage::load(&path) {
+                if r.history_id == history_id {
+                    r.history_prompts.push(text);
+                    if let Err(e) = crate::review_storage::save(&path, &r) {
+                        history_result(&app, &project_id, Err(e));
+                    }
+                }
+            }
+        }
+        Ok(result)
     } else {
         c.call(
             "turn/interrupt",
@@ -638,7 +876,7 @@ pub(crate) fn project_review(app: crate::Backend, project_id: String) -> Result<
     paths.sort();
     paths.dedup();
     Ok(
-        json!({"active":r.active,"changes":paths.into_iter().filter(|p|r.before.get(p)!=r.after.get(p)).map(|p|{let old=r.before.get(&p);let new=r.after.get(&p);json!({"path":p,"oldContent":old.and_then(|b|std::str::from_utf8(b).ok()),"newContent":new.and_then(|b|std::str::from_utf8(b).ok()),"kind":if old.is_none(){"added"}else if new.is_none(){"deleted"}else{"modified"},"binary":old.map(|b|std::str::from_utf8(b).is_err()).unwrap_or(false)||new.map(|b|std::str::from_utf8(b).is_err()).unwrap_or(false)})}).collect::<Vec<_>>()}),
+        json!({"active":r.active,"revision":review_revision(&r),"changes":paths.into_iter().filter(|p|r.before.get(p)!=r.after.get(p)).map(|p|{let old=r.before.get(&p);let new=r.after.get(&p);json!({"path":p,"oldContent":old.and_then(|b|std::str::from_utf8(b).ok()),"newContent":new.and_then(|b|std::str::from_utf8(b).ok()),"kind":if old.is_none(){"added"}else if new.is_none(){"deleted"}else{"modified"},"binary":old.map(|b|std::str::from_utf8(b).is_err()).unwrap_or(false)||new.map(|b|std::str::from_utf8(b).is_err()).unwrap_or(false)})}).collect::<Vec<_>>()}),
     )
 }
 pub(crate) fn project_resolve_review(
@@ -647,53 +885,243 @@ pub(crate) fn project_resolve_review(
     path: String,
     undo: bool,
 ) -> Result<(), String> {
-    let projects = &app.inner.projects;
-    let _files = projects.0.lock().map_err(|e| e.to_string())?;
-    let state = &app.inner.codex;
-    let _guard = state.reviews.lock().map_err(|e| e.to_string())?;
+    project_resolve_batch(app, project_id, vec![path], undo, None).map(|_| ())
+}
+pub(crate) fn project_resolve_batch(
+    app: crate::Backend,
+    project_id: String,
+    paths: Vec<String>,
+    undo: bool,
+    expected: Option<String>,
+) -> Result<Value, String> {
+    let _service = app
+        .inner
+        .codex
+        .service_lock
+        .try_lock()
+        .map_err(|_| "Project operation in progress. Retry accepting changes.")?;
+    resolve_batch_reserved(app.clone(), project_id, paths, undo, expected)
+}
+pub(crate) fn resolve_batch_reserved(
+    app: crate::Backend,
+    project_id: String,
+    mut paths: Vec<String>,
+    undo: bool,
+    expected: Option<String>,
+) -> Result<Value, String> {
+    paths.sort();
+    paths.dedup();
+    if paths.is_empty() {
+        return Err("No changes selected".into());
+    }
+    history_result(
+        &app,
+        &project_id,
+        settle_implicit_history(&app, &project_id),
+    );
     let file = review_path(&app, &project_id)?;
-    let mut r: Review = crate::review_storage::load(&file)?;
-    if r.active {
-        return Err("Wait for the agent to finish".into());
-    }
-    if r.before.get(&path) == r.after.get(&path) {
-        return Err("No pending change for this file".into());
-    }
     let root = projects::get(&app, &project_id)?.root;
-    if undo {
-        undo_change(&root, &r, &path)?;
+    let r = {
+        let _files = app.inner.projects.0.lock().map_err(|e| e.to_string())?;
+        let r = crate::review_storage::load(&file)?;
+        if r.active {
+            return Err("Wait for the agent to finish".into());
+        }
+        if expected.as_ref().is_some_and(|e| e != &review_revision(&r)) {
+            return Err("Review changed. Refresh before accepting.".into());
+        }
+        for p in &paths {
+            if r.before.get(p) == r.after.get(p) {
+                return Err("No pending change for this file".into());
+            }
+            let path = projects::resolve(&root, p)?;
+            let actual = match std::fs::read(path) {
+                Ok(b) => Some(b),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(e.to_string()),
+            };
+            if actual.as_ref() != r.after.get(p)
+                && (undo || !crate::history::workflow::untracked_output(&root.to_string_lossy(), p))
+            {
+                return Err(format!(
+                    "File changed on disk: {p}. Refresh the review before accepting."
+                ));
+            }
+        }
+        r
+    };
+    if !undo {
+        if let Err(error) = save_json(
+            &intent_path(&app, &project_id)?,
+            &AcceptanceIntent {
+                review: r.clone(),
+                paths: paths.clone(),
+                implicit: false,
+            },
+        ) {
+            history_result(&app, &project_id, Err(error));
+        }
+    }
+    let warning = if !undo {
+        let result = (|| {
+            let inputs = history_baseline(&app, &project_id)?;
+            crate::history::workflow::initialize(&root.to_string_lossy(), Some(inputs))?;
+            record_acceptance(&app, &project_id, &r, &paths)
+        })();
+        let warning = result.as_ref().err().cloned();
+        history_result(&app, &project_id, result);
+        warning
+    } else {
+        None
+    };
+    let _files = app.inner.projects.0.lock().map_err(|e| e.to_string())?;
+    let mut current = crate::review_storage::load(&file)?;
+    if review_revision(&current) != review_revision(&r) {
+        return Err("Review changed while saving history".into());
+    }
+    for p in &paths {
+        if undo {
+            undo_change(&root, &r, p)?;
+        }
+        current.before.remove(p);
+        current.after.remove(p);
     }
     if undo {
-        if let Some(v) = &mut r.visual {
+        if let Some(v) = &mut current.visual {
             match projects::snapshot(&root).and_then(|inputs| {
                 crate::visual_review::capture(&app, &project_id, &v.main, &inputs)
             }) {
-                Ok(artifact) => {
-                    v.after = Some(artifact);
+                Ok(a) => {
+                    v.after = Some(a);
                     v.state = "preparing".into();
                 }
-                Err(error) => {
+                Err(e) => {
                     v.after = None;
                     v.state = "unavailable".into();
-                    v.error = Some(error);
+                    v.error = Some(e);
                 }
             }
         }
     }
-    r.before.remove(&path);
-    r.after.remove(&path);
-    if r.before == r.after {
+    if current.before == current.after {
         crate::review_storage::remove(&file)?;
     } else {
-        crate::review_storage::save(&file, &r)?;
+        crate::review_storage::save(&file, &current)?;
     }
-    drop(_guard);
     drop(_files);
+    if !undo {
+        // The Git queue remains authoritative for retries once decisions are saved.
+        let queued = crate::history::workflow::status(&root.to_string_lossy())
+            .ok()
+            .is_some_and(|s| s["pending"].as_u64().unwrap_or(0) > 0);
+        if warning.is_none() || queued {
+            let _ = std::fs::remove_file(intent_path(&app, &project_id)?);
+        }
+    }
     let _ = app.emit_review(json!({"projectId":project_id}));
     schedule_visual_report(&app, &project_id, undo)?;
-    Ok(())
+    Ok(json!({"accepted":!undo,"historyWarning":warning}))
 }
+pub(crate) fn refresh_review(app: crate::Backend, id: String) -> Result<Value, String> {
+    let _files = app.inner.projects.0.lock().map_err(|e| e.to_string())?;
+    let path = review_path(&app, &id)?;
+    let mut review = crate::review_storage::load(&path)?;
+    if review.active {
+        return Err("Wait for the agent to finish".into());
+    }
+    let root = projects::get(&app, &id)?.root;
+    let mut paths: Vec<_> = review
+        .before
+        .keys()
+        .chain(review.after.keys())
+        .cloned()
+        .collect();
+    paths.sort();
+    paths.dedup();
+    for name in paths {
+        let bytes = match std::fs::read(projects::resolve(&root, &name)?) {
+            Ok(bytes) => Some(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e.to_string()),
+        };
+        if let Some(bytes) = bytes {
+            review.after.insert(name.clone(), bytes);
+        } else {
+            review.after.remove(&name);
+        }
+        if review.before.get(&name) == review.after.get(&name) {
+            review.before.remove(&name);
+            review.after.remove(&name);
+        }
+    }
+    if let Some(visual) = &mut review.visual {
+        visual.generation = uuid::Uuid::new_v4().to_string();
+        match projects::snapshot(&root)
+            .and_then(|inputs| crate::visual_review::capture(&app, &id, &visual.main, &inputs))
+        {
+            Ok(artifact) => {
+                visual.after = Some(artifact);
+                visual.state = "preparing".into();
+                visual.error = None;
+            }
+            Err(e) => {
+                visual.after = None;
+                visual.state = "unavailable".into();
+                visual.error = Some(e);
+            }
+        }
+    }
+    if review.before == review.after {
+        crate::review_storage::remove(&path)?;
+    } else {
+        crate::review_storage::save(&path, &review)?;
+    }
+    drop(_files);
+    let _ = app.emit_review(json!({"projectId":id}));
+    schedule_visual_report(&app, &id, true)?;
+    project_review(app, id)
+}
+
 pub(crate) fn recover(app: &crate::Backend) {
+    if let Ok(dir) = projects::data_dir(app) {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let Some(id) = name
+                    .strip_prefix("history-accept-")
+                    .and_then(|n| n.strip_suffix(".json"))
+                else {
+                    continue;
+                };
+                let Ok(bytes) = std::fs::read(entry.path()) else {
+                    continue;
+                };
+                let Ok(intent) = serde_json::from_slice::<AcceptanceIntent>(&bytes) else {
+                    continue;
+                };
+                if intent.implicit {
+                    if let Ok(path) = review_path(app, id) {
+                        if path.exists() {
+                            let _ = crate::review_storage::confirm_start(&path);
+                        }
+                    }
+                    let _ = finish_acceptance_intent(app, id);
+                } else if let Ok(path) = review_path(app, id) {
+                    if path.exists() {
+                        let _ = project_resolve_batch(
+                            app.clone(),
+                            id.into(),
+                            intent.paths,
+                            false,
+                            Some(review_revision(&intent.review)),
+                        );
+                    } else {
+                        let _ = finish_acceptance_intent(app, id);
+                    }
+                }
+            }
+        }
+    }
     if let Ok(dir) = projects::data_dir(app) {
         if let Ok(entries) = std::fs::read_dir(dir) {
             for e in entries.flatten() {
@@ -763,6 +1191,186 @@ fn undo_change(root: &std::path::Path, r: &Review, path: &str) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn history_review_fixture() -> (tempfile::TempDir, crate::Backend, projects::Project, Review) {
+        let (dir, app) = crate::test_backend();
+        let root = dir.path().join("paper");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("main.tex"), "before").unwrap();
+        std::fs::write(root.join("part.tex"), "old part").unwrap();
+        let project =
+            projects::project_register(app.clone(), root.to_string_lossy().into()).unwrap();
+        crate::history::history_init(root.to_string_lossy().into()).unwrap();
+        let before = projects::snapshot(&root).unwrap();
+        std::fs::write(root.join("main.tex"), "accepted").unwrap();
+        std::fs::write(root.join("part.tex"), "new part").unwrap();
+        let review = Review {
+            project_id: project.id.clone(),
+            before,
+            after: projects::snapshot(&root).unwrap(),
+            history_id: uuid::Uuid::new_v4().to_string(),
+            history_prompts: vec!["Make it concise".into()],
+            ..Default::default()
+        };
+        crate::review_storage::save(&review_path(&app, &project.id).unwrap(), &review).unwrap();
+        (dir, app, project, review)
+    }
+    #[test]
+    fn keep_all_records_one_commit_and_partial_keep_excludes_other_files() {
+        let (_dir, app, p, r) = history_review_fixture();
+        project_resolve_batch(
+            app.clone(),
+            p.id.clone(),
+            vec!["main.tex".into(), "part.tex".into()],
+            false,
+            Some(review_revision(&r)),
+        )
+        .unwrap();
+        let list = crate::history::history_list(p.root.to_string_lossy().into(), 50, 0).unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].changed_files, vec!["main.tex", "part.tex"]);
+        assert!(list[0].message.contains("Make it concise"));
+        assert!(!review_path(&app, &p.id).unwrap().exists());
+        let (_dir, app, p, _) = history_review_fixture();
+        project_resolve_review(app.clone(), p.id.clone(), "main.tex".into(), false).unwrap();
+        let list = crate::history::history_list(p.root.to_string_lossy().into(), 50, 0).unwrap();
+        assert_eq!(list[0].changed_files, vec!["main.tex"]);
+        project_resolve_review(app.clone(), p.id.clone(), "part.tex".into(), true).unwrap();
+        assert_eq!(std::fs::read(p.root.join("part.tex")).unwrap(), b"old part");
+        assert_eq!(
+            crate::history::history_list(p.root.to_string_lossy().into(), 50, 0)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+    #[test]
+    fn keep_refuses_external_edits_but_git_failure_does_not_block_acceptance() {
+        let (_dir, app, p, r) = history_review_fixture();
+        std::fs::write(p.root.join("main.tex"), "external edit").unwrap();
+        assert!(
+            project_resolve_review(app.clone(), p.id.clone(), "main.tex".into(), false)
+                .unwrap_err()
+                .contains("File changed on disk")
+        );
+        std::fs::write(p.root.join("main.tex"), "accepted").unwrap();
+        let repo = git2::Repository::open(&p.root).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("part.tex")).unwrap();
+        index.write().unwrap();
+        let result = project_resolve_batch(
+            app.clone(),
+            p.id.clone(),
+            vec!["main.tex".into()],
+            false,
+            Some(review_revision(&r)),
+        )
+        .unwrap();
+        assert!(result["historyWarning"]
+            .as_str()
+            .unwrap()
+            .contains("staged"));
+        assert_eq!(
+            project_review(app.clone(), p.id).unwrap()["changes"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            crate::history::history_list(p.root.to_string_lossy().into(), 50, 0)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+    #[test]
+    fn reload_review_accepts_external_content_and_regenerated_output_does_not_block_keep() {
+        let (_dir, app, p, mut r) = history_review_fixture();
+        std::fs::write(p.root.join("main.tex"), "external edit").unwrap();
+        refresh_review(app.clone(), p.id.clone()).unwrap();
+        project_resolve_review(app.clone(), p.id.clone(), "main.tex".into(), false).unwrap();
+        let commits = crate::history::history_list(p.root.to_string_lossy().into(), 50, 0).unwrap();
+        assert_eq!(
+            crate::history::history_file_at(
+                p.root.to_string_lossy().into(),
+                commits[0].id.clone(),
+                "main.tex".into()
+            )
+            .unwrap(),
+            "external edit"
+        );
+        r.before.clear();
+        r.after.clear();
+        r.before.insert("main.pdf".into(), b"before".to_vec());
+        r.after.insert("main.pdf".into(), b"agent output".to_vec());
+        std::fs::write(p.root.join("main.pdf"), "recompiled output").unwrap();
+        crate::review_storage::save(&review_path(&app, &p.id).unwrap(), &r).unwrap();
+        project_resolve_review(app.clone(), p.id.clone(), "main.pdf".into(), false).unwrap();
+        assert_eq!(
+            crate::history::history_list(p.root.to_string_lossy().into(), 50, 0)
+                .unwrap()
+                .len(),
+            commits.len()
+        );
+    }
+    #[test]
+    fn interrupted_acceptance_intent_recovers_once() {
+        let (_dir, app, p, r) = history_review_fixture();
+        save_json(
+            &intent_path(&app, &p.id).unwrap(),
+            &AcceptanceIntent {
+                review: r,
+                paths: vec!["main.tex".into(), "part.tex".into()],
+                implicit: false,
+            },
+        )
+        .unwrap();
+        recover(&app);
+        recover(&app);
+        assert!(!review_path(&app, &p.id).unwrap().exists());
+        assert!(!intent_path(&app, &p.id).unwrap().exists());
+        assert_eq!(
+            crate::history::history_list(p.root.to_string_lossy().into(), 50, 0)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+    #[test]
+    fn next_turn_confirmation_commits_previous_bytes_not_running_edits() {
+        let (_dir, app, p, previous) = history_review_fixture();
+        let r = prepare_review(
+            p.id.clone(),
+            Some(previous),
+            projects::snapshot(&p.root).unwrap(),
+        )
+        .unwrap();
+        crate::review_storage::save(&review_path(&app, &p.id).unwrap(), &r).unwrap();
+        std::fs::write(p.root.join("main.tex"), "next running edit").unwrap();
+        confirm_review_start(&app, &p.id).unwrap();
+        let list = crate::history::history_list(p.root.to_string_lossy().into(), 50, 0).unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(
+            crate::history::history_file_at(
+                p.root.to_string_lossy().into(),
+                list[0].id.clone(),
+                "main.tex".into()
+            )
+            .unwrap(),
+            "accepted"
+        );
+        assert!(
+            crate::review_storage::load(&review_path(&app, &p.id).unwrap())
+                .unwrap()
+                .previous
+                .is_none()
+        );
+        assert_eq!(
+            std::fs::read(p.root.join("main.tex")).unwrap(),
+            b"next running edit"
+        );
+    }
+
     fn pending_review() -> Review {
         Review {
             project_id: "project".into(),
@@ -851,6 +1459,8 @@ mod tests {
             after: projects::snapshot(&root).unwrap(),
             previous: None,
             visual: None,
+            history_prompts: vec![],
+            history_id: String::new(),
         };
         let file = d.path().join("review.json");
         save_json(&file, &r).unwrap();
@@ -922,6 +1532,7 @@ mod tests {
             project.id.clone(),
             None,
             "running".into(),
+            None,
             None,
             None,
             None,

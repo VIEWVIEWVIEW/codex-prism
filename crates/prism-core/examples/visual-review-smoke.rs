@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used)]
 //! Local-only backend for the WebKit visual-review smoke test. Uses a disposable
 //! project and deterministic app-server fixture, never a user's agent account.
-use prism_core::{Backend, BackendConfig, NoopEventSink};
+use prism_core::{Backend, BackendConfig, RecordingEventSink};
 use serde_json::{json, Value};
 use std::{
     io::{Read, Write},
@@ -17,21 +17,27 @@ async fn main() {
     use std::os::unix::fs::PermissionsExt;
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path();
-    let backend = Backend::new(
-        BackendConfig {
-            data_dir: dir.join("data"),
-            home_dir: dir.join("home"),
-            temp_dir: dir.join("tmp"),
-        },
-        Arc::new(NoopEventSink),
-    )
-    .unwrap();
+    let config = BackendConfig {
+        data_dir: dir.join("data"),
+        home_dir: dir.join("home"),
+        temp_dir: dir.join("tmp"),
+    };
+    let events = Arc::new(RecordingEventSink::default());
+    let mut backend = Backend::new(config.clone(), events.clone()).unwrap();
     let root = dir.join("project");
     std::fs::create_dir(&root).unwrap();
     let source="\\documentclass{article}\n\\begin{document}\nOriginal passage for visual review.\n\nAnother unchanged paragraph.\n\\end{document}\n";
     std::fs::write(root.join("main.tex"), source).unwrap();
+    if std::env::var_os("PRISM_SMOKE_HISTORY").is_some() {
+        std::fs::write(root.join("notes.tex"), "Original note").unwrap();
+    }
     let script = dir.join("agent");
     let fixture=include_str!("../tests/fixtures/app_server.py").replace(r#"(root / "main.tex").write_text("running edit")"#,"(root / \"main.tex\").write_text((root / \"main.tex\").read_text().replace(\"Original passage\",\"Updated passage\"))\n            complete()");
+    let fixture = if std::env::var_os("PRISM_SMOKE_HISTORY").is_some() {
+        fixture.replace("            complete()", "            (root / \"notes.tex\").write_text(\"Updated note\")\n            complete()")
+    } else {
+        fixture
+    };
     std::fs::write(&script, fixture).unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     backend
@@ -88,6 +94,24 @@ async fn main() {
                             .map_err(|e| e.to_string())
                     })
             }
+            "events" => Ok(json!(events
+                .take()
+                .into_iter()
+                .map(|e| json!({"event":e.name(),"payload":e.payload()}))
+                .collect::<Vec<_>>())),
+            "restart" => {
+                backend.shutdown().await;
+                backend = Backend::new(config.clone(), events.clone()).unwrap();
+                Ok(Value::Null)
+            }
+            "git_log" => {
+                let out = std::process::Command::new("git")
+                    .current_dir(&root)
+                    .args(["log", "--format=%s"])
+                    .output()
+                    .unwrap();
+                Ok(json!(String::from_utf8_lossy(&out.stdout)))
+            }
             "fixture" => Ok(json!({"project":project,"source":source})),
             "edit" => {
                 backend
@@ -113,6 +137,16 @@ async fn main() {
                     .await
             }
             "project_review" => backend.project_review(project.id.clone()),
+            "project_resolve_review_batch" => {
+                backend
+                    .project_resolve_review_batch(
+                        project.id.clone(),
+                        serde_json::from_value(args["paths"].clone()).unwrap(),
+                        args["undo"].as_bool().unwrap(),
+                        args["expectedRevision"].as_str().map(str::to_owned),
+                    )
+                    .await
+            }
             "project_resolve_review" => backend
                 .project_resolve_review(
                     project.id.clone(),

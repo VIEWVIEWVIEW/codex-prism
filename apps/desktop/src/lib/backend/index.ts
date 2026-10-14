@@ -4,6 +4,9 @@ const projectServices = new Set([
   "load_existing_pdf",
   "synctex_edit",
   "history_init",
+  "history_status",
+  "history_set_prompt",
+  "history_retry",
   "history_snapshot",
   "history_list",
   "history_diff",
@@ -71,6 +74,7 @@ export interface ReviewChange {
   binary: boolean;
 }
 export interface Review {
+  revision?: string;
   active: boolean;
   changes: ReviewChange[];
 }
@@ -152,6 +156,7 @@ export interface PrismBackend {
       effort?: string,
       images?: string[],
       mainDocument?: string,
+      historyPrompt?: string,
     ): Promise<any>;
     control(
       projectId: string,
@@ -164,7 +169,14 @@ export interface PrismBackend {
   };
   review: {
     get(projectId: string): Promise<Review>;
+    refresh(projectId: string): Promise<Review>;
     resolve(projectId: string, path: string, undo: boolean): Promise<void>;
+    resolveBatch(
+      projectId: string,
+      paths: string[],
+      undo: boolean,
+      expectedRevision?: string,
+    ): Promise<{ accepted: boolean; historyWarning: string | null }>;
     subscribe(cb: (id: string) => void): Promise<() => void>;
   };
 }
@@ -198,7 +210,16 @@ export const backend: PrismBackend = {
     sessions: (projectId) => invoke("codex_sessions", { projectId }),
     thread: (projectId, threadId, action, title) =>
       invoke("codex_thread", { projectId, threadId, action, title }),
-    send: (projectId, threadId, prompt, model, effort, images, mainDocument) =>
+    send: (
+      projectId,
+      threadId,
+      prompt,
+      model,
+      effort,
+      images,
+      mainDocument,
+      historyPrompt,
+    ) =>
       invoke("codex_send", {
         projectId,
         threadId,
@@ -207,6 +228,7 @@ export const backend: PrismBackend = {
         effort: effort || null,
         images: images ?? [],
         mainDocument: mainDocument ?? null,
+        historyPrompt: historyPrompt ?? null,
       }),
     control: (projectId, threadId, turnId, prompt) =>
       invoke("codex_control", {
@@ -220,6 +242,19 @@ export const backend: PrismBackend = {
   },
   review: {
     get: (projectId) => invoke("project_review", { projectId }),
+    refresh: (projectId) =>
+      nativeInvoke("project_service", {
+        projectId,
+        operation: "review_refresh",
+        args: {},
+      }),
+    resolveBatch: (projectId, paths, undo, expectedRevision) =>
+      invoke("project_resolve_review_batch", {
+        projectId,
+        paths,
+        undo,
+        expectedRevision: expectedRevision ?? null,
+      }),
     resolve: (projectId, path, undo) =>
       invoke("project_resolve_review", { projectId, path, undo }),
     subscribe: (cb) =>

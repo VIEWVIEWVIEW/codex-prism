@@ -57,7 +57,7 @@ Use **Recompile** to build the PDF, or enable **Auto** for automatic recompilati
 - **LaTeX editor** — CodeMirror with syntax highlighting, search, multi-file projects and auto-save. Hide the source panel while keeping the chat and PDF visible.
 - **PDF preview** — MuPDF rendering with SyncTeX navigation, zoom and text selection. Existing PDFs load at startup before a new compilation is needed.
 - **Local compilation** — system TeX Live runs pdfLaTeX by default; `% !TEX program = xelatex` or `lualatex` selects another engine. Auto-recompile is optional.
-- **History and proposed changes** — local Git snapshots, comparisons and restoration, plus Keep/Undo review of assistant edits.
+- **History and proposed changes** — ordinary document Git commits, a compact history list and restoration, plus Keep/Undo review of assistant edits.
 - **Python environment** — optional [uv](https://docs.astral.sh/uv/) installation and explicit project environment setup in settings. Opening a project does not create or modify its environment.
 - **Scientific writing instructions** — project `AGENTS.md` guidance, including TikZ for technical drawings, and optional skills from [K-Dense Scientific Skills](https://github.com/K-Dense-AI/claude-scientific-skills).
 - **Templates and project wizard** — start papers, theses, presentations and other LaTeX documents, including private local templates.
@@ -117,7 +117,14 @@ Creating a project copies the complete starter body, bibliography, classes, styl
 
 Documents and compilation stay on your machine. AI requests send prompts and the content used by Codex to its configured provider for inference. Credentials are managed by the installed Codex CLI; signing out affects that shared login.
 
-Existing project instructions, skills, Python environments and history are preserved. Project history is stored in `.codexprism/history`; existing `.claudeprism/history.git` history is migrated automatically when a project opens. New project instructions use `AGENTS.md`, and scientific skills use `.agents/skills`.
+Existing project instructions, skills, Python environments and history are preserved. Document history uses the document’s normal `.git` repository (or its existing parent repository/worktree). Private `.codexprism/history` and legacy `.claudeprism/history.git` repositories migrate automatically when no normal repository exists; otherwise they remain preserved as separate archives. New project instructions use `AGENTS.md`, and scientific skills use `.agents/skills`.
+
+History records explicit saves, checkpoints before agent turns, and accepted agent edits. **Keep** records the selected file; **Keep all** records one commit for the batch, including acceptance from visual review. Autosave and compilation do not create commits. History’s **Save checkpoint** and **Restore** actions provide manual recovery points; restoring preserves later commits and recompiles the document.
+
+**Include prompt in commits** is a per-document option in History, off by default. It applies to future turns and includes only user prompts, not attachments or tool output. Included prompts travel with remote pushes. Configure remotes and push with your usual Git tools from the document directory; codex-prism does not push automatically.
+
+Externally staged changes, detached HEAD and ongoing merges/rebases pause automatic history recording without blocking document edits or acceptance. History displays the reason and offers Retry using captured content. Application state and generated outputs are excluded from new history commits; already tracked files remain tracked.
+
 
 The application is currently local and single-user. Browser hosting and project collaboration are not included yet.
 
@@ -176,7 +183,7 @@ For a hands-on acceptance check, open a disposable LaTeX project, ask Codex to e
 - The agent saves dirty buffers before starting, runs with `workspace-write` and `on-request` approvals, and allows one active turn per project. Unrelated CLI sessions are not imported into its chat list.
 - File editing is locked during a turn and pending review, but pending review does not block the next chat prompt. Sending a new prompt implicitly keeps pending changes once Codex confirms the new turn has started; Undo then applies only to the new turn. A failed start preserves the prior review. At completion, the app reviews the actual project source/asset changes, including command-generated changes. Keep accepts the current disk contents; Undo restores the saved bytes only if the file still matches the completed turn. Text saves likewise refuse to overwrite an external edit.
 - Review baselines and session mappings persist in the application's data directory, separately from project source. Restart recovers interrupted reviews. Prompts are never automatically resubmitted after a disconnect. Generated build files, hidden/environment directories and symlinks are excluded from snapshots; changes outside that scope cannot be undone by project review.
-- LaTeX/PDF and history features remain; Python and external scientific skills are optional. Existing `.claudeprism/history.git` history is migrated to `.codexprism/history` with its commits and labels preserved. New project instructions use `AGENTS.md`; scientific skills use `.agents/skills`.
+- LaTeX/PDF and history features remain; Python and external scientific skills are optional. Existing private Git history migrates to a normal document repository with commits, labels and remotes preserved. New project instructions use `AGENTS.md`; scientific skills use `.agents/skills`.
 - Hosts construct a shared `prism_core::Backend` with explicit application-data, home and temporary paths, an `EventSink`, and optionally a native directory-permission hook. Construction recovers interrupted reviews; `shutdown().await` rejects new work, stops the agent and background installers, drains admitted work, and retains persisted projects/builds. The headless default never opens native permission dialogs.
 - `apps/desktop/src/lib/backend` is the frontend transport boundary and `desktop-host.ts` owns desktop window/dialog/open-link APIs. The implementation remains Tauri-only at this stage; a hosted transport, browser import/export, authentication and remote isolation remain future work.
 

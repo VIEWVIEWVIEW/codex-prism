@@ -11,6 +11,10 @@ struct StoredReview {
     project_id: String,
     active: bool,
     #[serde(default)]
+    history_prompts: Vec<String>,
+    #[serde(default)]
+    history_id: String,
+    #[serde(default)]
     visual: Option<crate::visual_review::VisualReview>,
     before: BTreeMap<String, String>,
     after: BTreeMap<String, String>,
@@ -37,6 +41,8 @@ fn encode(review: &Review, dir: &Path) -> Result<StoredReview, String> {
         format_version: 1,
         project_id: review.project_id.clone(),
         active: review.active,
+        history_prompts: review.history_prompts.clone(),
+        history_id: review.history_id.clone(),
         visual: review.visual.clone(),
         before: store(&review.before)?,
         after: store(&review.after)?,
@@ -71,6 +77,8 @@ fn decode(review: StoredReview, dir: &Path) -> Result<Review, String> {
     Ok(Review {
         project_id: review.project_id,
         active: review.active,
+        history_prompts: review.history_prompts.clone(),
+        history_id: review.history_id.clone(),
         visual: review.visual.clone(),
         before: read(review.before)?,
         after: read(review.after)?,

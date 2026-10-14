@@ -1,3 +1,4 @@
+import { toast } from "sonner";
 import { coalescedRefresh } from "@/lib/coalesced-refresh";
 import { isImageUpload, projectImageFolder } from "@/lib/project-images";
 import { create } from "zustand";
@@ -903,9 +904,11 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       try {
         await useHistoryStore
           .getState()
-          .createSnapshot(state.projectRoot, "[manual] Save");
-      } catch {
-        // Snapshot failure should not break save
+          .createSnapshot(state.projectRoot, "docs(history): save document");
+      } catch (error) {
+        toast.warning(
+          `File saved, but history could not be saved: ${String(error)}`,
+        );
       }
     }
   },

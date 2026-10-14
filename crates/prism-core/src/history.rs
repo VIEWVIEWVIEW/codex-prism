@@ -1,4 +1,6 @@
-use git2::{DiffOptions, IndexAddOption, Oid, Repository, RepositoryInitOptions, Signature, Sort};
+use git2::{DiffOptions, Oid, Repository, Signature, Sort};
+#[path = "history_workflow.rs"]
+pub(crate) mod workflow;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
@@ -6,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 // ─── Types ───
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 pub struct SnapshotInfo {
     pub id: String,
     pub message: String,
@@ -30,8 +32,8 @@ fn history_path(project_root: &str) -> PathBuf {
 }
 
 fn open_repo(project_root: &str) -> Result<Repository, String> {
-    let git_dir = history_path(project_root);
-    Repository::open(&git_dir).map_err(|e| format!("Failed to open history repo: {}", e))
+    Repository::discover(project_root)
+        .map_err(|e| format!("Failed to open document repository: {e}"))
 }
 
 // An interrupted legacy initialization can leave only an empty .git directory.
@@ -78,228 +80,18 @@ fn tag_map(repo: &Repository) -> HashMap<Oid, Vec<String>> {
     map
 }
 
-fn ensure_excludes(project_root: &str, repo: &Repository) {
-    let excludes_path = Path::new(project_root)
-        .join(".codexprism")
-        .join("history-exclude");
-    let content = r#"# LaTeX build artifacts
-*.aux
-*.log
-*.out
-*.toc
-*.lof
-*.lot
-*.fls
-*.fdb_latexmk
-*.synctex.gz
-*.bbl
-*.blg
-*.nav
-*.snm
-*.vrb
-*.bcf
-*.run.xml
-
-# Output
-*.pdf
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Git
-.git/
-
-# codex-prism internal
-.claudeprism/
-.codexprism/
-.prism/
-"#;
-    if !excludes_path.exists() {
-        let _ = fs::write(&excludes_path, content);
-    } else {
-        // Preserve custom exclusions while adding internal directories.
-        if let Ok(mut existing) = fs::read_to_string(&excludes_path) {
-            for directory in [".claudeprism/", ".codexprism/", ".prism/"] {
-                if !existing.lines().any(|line| line.trim() == directory) {
-                    existing.push_str(&format!("\n{}\n", directory));
-                }
-            }
-            let _ = fs::write(&excludes_path, existing);
-        }
-    }
-
-    // Configure the repo to use this excludes file
-    if let Ok(mut config) = repo.config() {
-        let _ = config.set_str("core.excludesFile", &excludes_path.to_string_lossy());
-    }
-}
-
 // ─── Tauri Commands ───
 
+#[cfg(test)]
 pub(crate) fn history_init(project_root: String) -> Result<(), String> {
-    let git_dir = history_path(&project_root);
-
-    let legacy_dir = Path::new(&project_root).join(".claudeprism");
-    let legacy_history = legacy_dir.join("history.git");
-    let state_dir = Path::new(&project_root).join(".codexprism");
-    if !git_dir.exists() && legacy_history.exists() && !empty_legacy_history(&legacy_history)? {
-        // Validate before moving; never overwrite an existing destination history.
-        Repository::open(&legacy_history)
-            .map_err(|e| format!("Corrupt legacy history repo: {}", e))?;
-        fs::create_dir_all(&state_dir).map_err(|e| e.to_string())?;
-        let legacy_excludes = legacy_dir.join("history-exclude");
-        let excludes = state_dir.join("history-exclude");
-        if legacy_excludes.exists() && !excludes.exists() {
-            fs::copy(&legacy_excludes, &excludes).map_err(|e| e.to_string())?;
-        }
-        fs::rename(&legacy_history, &git_dir)
-            .map_err(|e| format!("Failed to migrate project history: {}", e))?;
-    }
-
-    if git_dir.exists() {
-        // Already initialized — verify and ensure excludes
-        let repo =
-            Repository::open(&git_dir).map_err(|e| format!("Corrupt history repo: {}", e))?;
-        repo.set_workdir(Path::new(&project_root), false)
-            .map_err(|e| format!("Failed to set history workdir: {}", e))?;
-        ensure_excludes(&project_root, &repo);
-        return Ok(());
-    }
-
-    // Create project history state directory
-    fs::create_dir_all(&state_dir)
-        .map_err(|e| format!("Failed to create .codexprism dir: {}", e))?;
-
-    // Keep the history repository separate, with the project root as its workdir.
-    let mut opts = RepositoryInitOptions::new();
-    opts.bare(false);
-    opts.workdir_path(Path::new(&project_root));
-    opts.no_reinit(true);
-
-    let repo = Repository::init_opts(&git_dir, &opts)
-        .map_err(|e| format!("Failed to init history repo: {}", e))?;
-
-    // Set up excludes file
-    ensure_excludes(&project_root, &repo);
-
-    // Create initial commit with all project files
-    let mut index = repo
-        .index()
-        .map_err(|e| format!("Failed to get index: {}", e))?;
-
-    // Add all files (respecting .gitignore)
-    index
-        .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
-        .map_err(|e| format!("Failed to add files: {}", e))?;
-    index
-        .write()
-        .map_err(|e| format!("Failed to write index: {}", e))?;
-
-    let tree_oid = index
-        .write_tree()
-        .map_err(|e| format!("Failed to write tree: {}", e))?;
-    let tree = repo
-        .find_tree(tree_oid)
-        .map_err(|e| format!("Failed to find tree: {}", e))?;
-
-    let sig = default_signature()?;
-    repo.commit(
-        Some("HEAD"),
-        &sig,
-        &sig,
-        "[init] Project opened",
-        &tree,
-        &[],
-    )
-    .map_err(|e| format!("Failed to create initial commit: {}", e))?;
-
-    Ok(())
+    workflow::initialize(&project_root, None)
 }
 
 pub(crate) fn history_snapshot(
     project_root: String,
     message: String,
 ) -> Result<Option<SnapshotInfo>, String> {
-    let repo = open_repo(&project_root)?;
-
-    let mut index = repo
-        .index()
-        .map_err(|e| format!("Failed to get index: {}", e))?;
-
-    // Stage all changes
-    index
-        .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
-        .map_err(|e| format!("Failed to add files: {}", e))?;
-
-    // Remove deleted files from index
-    let workdir = repo.workdir().ok_or("No workdir")?;
-    let entries: Vec<_> = index.iter().map(|e| e.path.clone()).collect();
-    for path_bytes in &entries {
-        let path_str = String::from_utf8_lossy(path_bytes);
-        let full_path = workdir.join(path_str.as_ref());
-        if !full_path.exists() {
-            let _ = index.remove_path(Path::new(path_str.as_ref()));
-        }
-    }
-
-    index
-        .write()
-        .map_err(|e| format!("Failed to write index: {}", e))?;
-
-    let tree_oid = index
-        .write_tree()
-        .map_err(|e| format!("Failed to write tree: {}", e))?;
-
-    // Check if there are actual changes vs HEAD
-    if let Ok(head) = repo.head() {
-        if let Ok(head_commit) = head.peel_to_commit() {
-            if head_commit.tree().map(|t| t.id()).unwrap_or(Oid::zero()) == tree_oid {
-                // No changes — skip snapshot
-                return Ok(None);
-            }
-        }
-    }
-
-    let tree = repo
-        .find_tree(tree_oid)
-        .map_err(|e| format!("Failed to find tree: {}", e))?;
-
-    let sig = default_signature()?;
-    let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
-    let parents: Vec<&git2::Commit> = parent.iter().collect();
-
-    let oid = repo
-        .commit(Some("HEAD"), &sig, &sig, &message, &tree, &parents)
-        .map_err(|e| format!("Failed to create commit: {}", e))?;
-
-    // Collect changed file paths
-    let changed_files = if let Some(parent_commit) = parent.as_ref() {
-        let parent_tree = parent_commit.tree().ok();
-        repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)
-            .map(|d| {
-                d.deltas()
-                    .filter_map(|delta| {
-                        delta
-                            .new_file()
-                            .path()
-                            .or_else(|| delta.old_file().path())
-                            .map(|p| p.to_string_lossy().to_string())
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
-    } else {
-        vec![]
-    };
-
-    Ok(Some(SnapshotInfo {
-        id: oid.to_string(),
-        message,
-        timestamp: chrono::Utc::now().timestamp(),
-        labels: vec![],
-        changed_files,
-    }))
+    workflow::checkpoint(&project_root, &message, None)
 }
 
 pub(crate) fn history_list(
@@ -313,11 +105,14 @@ pub(crate) fn history_list(
     let mut revwalk = repo
         .revwalk()
         .map_err(|e| format!("Failed to create revwalk: {}", e))?;
+    if repo.head().is_err() {
+        return Ok(vec![]);
+    }
     revwalk
         .push_head()
         .map_err(|e| format!("Failed to push HEAD: {}", e))?;
     revwalk
-        .set_sorting(Sort::TIME)
+        .set_sorting(Sort::TOPOLOGICAL | Sort::TIME)
         .map_err(|e| format!("Sort error: {}", e))?;
 
     let mut snapshots = Vec::new();
@@ -325,14 +120,6 @@ pub(crate) fn history_list(
 
     for oid_result in revwalk {
         let oid = oid_result.map_err(|e| format!("Revwalk error: {}", e))?;
-
-        if count < offset {
-            count += 1;
-            continue;
-        }
-        if snapshots.len() >= limit as usize {
-            break;
-        }
 
         let commit = repo
             .find_commit(oid)
@@ -360,9 +147,25 @@ pub(crate) fn history_list(
                 })
                 .unwrap_or_default()
         } else {
-            vec![]
+            let tree = commit.tree().map_err(|e| e.to_string())?;
+            repo.diff_tree_to_tree(None, Some(&tree), None)
+                .map_err(|e| e.to_string())?
+                .deltas()
+                .filter_map(|d| d.new_file().path().map(|p| p.to_string_lossy().to_string()))
+                .collect()
         };
 
+        let changed_files = workflow::scope_paths(&repo, &project_root, changed_files)?;
+        if changed_files.is_empty() {
+            continue;
+        }
+        if count < offset {
+            count += 1;
+            continue;
+        }
+        if snapshots.len() >= limit as usize {
+            break;
+        }
         snapshots.push(SnapshotInfo {
             id: oid.to_string(),
             message,
@@ -414,6 +217,12 @@ pub(crate) fn history_diff(
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
 
+        let Some(file_path) = workflow::scope_paths(&repo, &project_root, vec![file_path])?
+            .into_iter()
+            .next()
+        else {
+            continue;
+        };
         let status = match delta.status() {
             git2::Delta::Added => "added",
             git2::Delta::Deleted => "deleted",
@@ -470,7 +279,7 @@ pub(crate) fn history_file_at(
         .map_err(|e| format!("Commit not found: {}", e))?;
     let tree = commit.tree().map_err(|e| format!("Tree error: {}", e))?;
     let entry = tree
-        .get_path(Path::new(&file_path))
+        .get_path(&workflow::repo_path(&repo, &project_root, &file_path)?)
         .map_err(|e| format!("File not found in snapshot: {}", e))?;
     let blob = repo
         .find_blob(entry.id())
@@ -487,51 +296,7 @@ pub(crate) fn history_restore(
     project_root: String,
     snapshot_id: String,
 ) -> Result<SnapshotInfo, String> {
-    let repo = open_repo(&project_root)?;
-    let oid = Oid::from_str(&snapshot_id).map_err(|e| format!("Invalid snapshot_id: {}", e))?;
-    let commit = repo
-        .find_commit(oid)
-        .map_err(|e| format!("Commit not found: {}", e))?;
-    let tree = commit.tree().map_err(|e| format!("Tree error: {}", e))?;
-
-    // Checkout the tree to working directory
-    repo.checkout_tree(
-        tree.as_object(),
-        Some(git2::build::CheckoutBuilder::new().force()),
-    )
-    .map_err(|e| format!("Checkout failed: {}", e))?;
-
-    // Create a new "restore" commit on HEAD (not moving HEAD to old commit)
-    let mut index = repo.index().map_err(|e| format!("Index error: {}", e))?;
-    index
-        .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
-        .map_err(|e| format!("Add error: {}", e))?;
-    index.write().map_err(|e| format!("Write error: {}", e))?;
-
-    let new_tree_oid = index
-        .write_tree()
-        .map_err(|e| format!("Write tree error: {}", e))?;
-    let new_tree = repo
-        .find_tree(new_tree_oid)
-        .map_err(|e| format!("Find tree error: {}", e))?;
-
-    let sig = default_signature()?;
-    let head_commit = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
-    let parents: Vec<&git2::Commit> = head_commit.iter().collect();
-
-    let short_id = &snapshot_id[..8.min(snapshot_id.len())];
-    let msg = format!("[restore] Restored to {}", short_id);
-    let new_oid = repo
-        .commit(Some("HEAD"), &sig, &sig, &msg, &new_tree, &parents)
-        .map_err(|e| format!("Commit error: {}", e))?;
-
-    Ok(SnapshotInfo {
-        id: new_oid.to_string(),
-        message: msg,
-        timestamp: chrono::Utc::now().timestamp(),
-        labels: vec![],
-        changed_files: vec![],
-    })
+    workflow::restore(&project_root, &snapshot_id)
 }
 
 pub(crate) fn history_add_label(
@@ -591,14 +356,14 @@ mod tests {
         let dir = setup_project(&[("main.tex", "\\documentclass{article}")]);
         history_init(root(&dir)).unwrap();
 
-        let git_dir = dir.path().join(".codexprism").join("history");
+        let git_dir = dir.path().join(".git");
         assert!(git_dir.exists(), "history directory should be created");
 
         // Should have an initial commit
         let repo = Repository::open(&git_dir).unwrap();
         let head = repo.head().unwrap();
         let commit = head.peel_to_commit().unwrap();
-        assert!(commit.message().unwrap().contains("[init]"));
+        assert!(commit.message().unwrap().contains("docs(history): initial"));
     }
 
     #[test]
@@ -660,8 +425,8 @@ mod tests {
         history_add_label(r.clone(), initial.to_string(), "baseline".into()).unwrap();
         let legacy = dir.path().join(".claudeprism");
         fs::create_dir_all(&legacy).unwrap();
-        fs::rename(history_path(&r), legacy.join("history.git")).unwrap();
-        fs::remove_file(dir.path().join(".codexprism/history-exclude")).unwrap();
+        fs::create_dir_all(legacy.join("history.git")).unwrap();
+        fs::rename(dir.path().join(".git"), legacy.join("history.git/.git")).unwrap();
         fs::write(
             legacy.join("history-exclude"),
             "private.txt\n.claudeprism/\n",
@@ -670,7 +435,7 @@ mod tests {
         fs::write(dir.path().join("private.txt"), "excluded").unwrap();
 
         history_init(r.clone()).unwrap();
-        assert!(!legacy.join("history.git").exists());
+        assert!(!legacy.join("history.git/.git").exists());
         let repo = open_repo(&r).unwrap();
         assert_eq!(repo.head().unwrap().target(), Some(initial));
         assert_eq!(repo.revparse_single("baseline").unwrap().id(), initial);
@@ -692,7 +457,7 @@ mod tests {
         let dir = setup_project(&[("main.tex", "doc")]);
         history_init(root(&dir)).unwrap();
 
-        let excludes = dir.path().join(".codexprism").join("history-exclude");
+        let excludes = dir.path().join(".gitignore");
         assert!(excludes.exists());
         let content = fs::read_to_string(&excludes).unwrap();
         assert!(content.contains("*.aux"));
@@ -714,7 +479,7 @@ mod tests {
         let result = history_snapshot(r, "edited main.tex".into()).unwrap();
         assert!(result.is_some());
         let snap = result.unwrap();
-        assert_eq!(snap.message, "edited main.tex");
+        assert!(snap.message.starts_with("edited main.tex\n"));
         assert!(snap.changed_files.contains(&"main.tex".to_string()));
     }
 
@@ -758,10 +523,13 @@ mod tests {
 
         let list = history_list(r, 10, 0).unwrap();
         assert_eq!(list.len(), 3); // init + 2 snapshots
-        let msgs: Vec<&str> = list.iter().map(|s| s.message.as_str()).collect();
+        let msgs: Vec<&str> = list
+            .iter()
+            .map(|s| s.message.lines().next().unwrap())
+            .collect();
         assert!(msgs.contains(&"snap 1"));
         assert!(msgs.contains(&"snap 2"));
-        assert!(msgs.iter().any(|m| m.contains("[init]")));
+        assert!(msgs.iter().any(|m| m.contains("docs(history): initial")));
     }
 
     #[test]
@@ -882,7 +650,7 @@ mod tests {
 
         // Restore to init
         let restore_info = history_restore(r.clone(), init_id).unwrap();
-        assert!(restore_info.message.contains("[restore]"));
+        assert!(restore_info.message.contains("docs(history): restore"));
 
         // Working directory should have original content
         let content = fs::read_to_string(dir.path().join("main.tex")).unwrap();
@@ -946,30 +714,6 @@ mod tests {
         assert!(labels.contains(&"alpha".to_string()));
         assert!(labels.contains(&"beta".to_string()));
     }
-
-    // ─── ensure_excludes ───
-
-    #[test]
-    fn test_ensure_excludes_migrates_missing_prism() {
-        let dir = setup_project(&[("main.tex", "x")]);
-        let r = root(&dir);
-        history_init(r.clone()).unwrap();
-
-        // Write an excludes file WITHOUT .prism/
-        let excludes_path = dir.path().join(".codexprism").join("history-exclude");
-        fs::write(&excludes_path, "*.aux\n*.log\n.claudeprism/\n").unwrap();
-
-        let repo = open_repo(&r).unwrap();
-        ensure_excludes(&r, &repo);
-
-        let content = fs::read_to_string(&excludes_path).unwrap();
-        assert!(
-            content.contains(".prism/"),
-            "should migrate to include .prism/"
-        );
-    }
-
-    // ─── edge cases ───
 
     #[test]
     fn test_history_snapshot_deleted_file() {
@@ -1061,6 +805,8 @@ mod tests {
         // Should now have 4 entries: init, change, restore
         let list = history_list(r, 10, 0).unwrap();
         assert_eq!(list.len(), 3);
-        assert!(list.iter().any(|s| s.message.contains("[restore]")));
+        assert!(list
+            .iter()
+            .any(|s| s.message.contains("docs(history): restore")));
     }
 }

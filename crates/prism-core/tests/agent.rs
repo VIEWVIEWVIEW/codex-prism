@@ -151,3 +151,82 @@ async fn shutdown_cancels_an_unanswered_agent_request() {
         .unwrap();
     assert!(request.await.unwrap().is_err());
 }
+
+#[tokio::test]
+async fn prompt_option_records_only_user_text_and_applies_to_future_turns() {
+    for enabled in [false, true] {
+        let (_dir, backend, p, events) = setup().await;
+        backend
+            .project_service(p.id.clone(), "history_init".into(), json!({}))
+            .await
+            .unwrap();
+        let status = backend
+            .project_service(p.id.clone(), "history_status".into(), json!({}))
+            .await
+            .unwrap();
+        assert_eq!(status["includePrompt"], false);
+        backend
+            .project_service(
+                p.id.clone(),
+                "history_set_prompt".into(),
+                json!({"enabled":enabled}),
+            )
+            .await
+            .unwrap();
+        backend
+            .codex_send_with_history_prompt(
+                p.id.clone(),
+                None,
+                "attachment body that must not enter a commit".into(),
+                None,
+                None,
+                None,
+                None,
+                Some("Improve this passage".into()),
+            )
+            .await
+            .unwrap();
+        // Switching the option during a turn must not retroactively change it.
+        backend
+            .project_service(
+                p.id.clone(),
+                "history_set_prompt".into(),
+                json!({"enabled":!enabled}),
+            )
+            .await
+            .unwrap();
+        backend
+            .codex_control(
+                p.id.clone(),
+                "thread-1".into(),
+                "turn-1".into(),
+                Some("Keep it short".into()),
+            )
+            .await
+            .unwrap();
+        backend
+            .codex_control(p.id.clone(), "thread-1".into(), "turn-1".into(), None)
+            .await
+            .unwrap();
+        event(&events, "turn/completed").await;
+        let review = backend.project_review(p.id.clone()).unwrap();
+        backend
+            .project_resolve_review_batch(
+                p.id.clone(),
+                vec!["main.tex".into()],
+                false,
+                review["revision"].as_str().map(str::to_owned),
+            )
+            .await
+            .unwrap();
+        let commits = backend
+            .project_service(p.id.clone(), "history_list".into(), json!({}))
+            .await
+            .unwrap();
+        let message = commits[0]["message"].as_str().unwrap();
+        assert_eq!(message.contains("Improve this passage"), enabled);
+        assert_eq!(message.contains("Keep it short"), enabled);
+        assert!(!message.contains("attachment body"));
+        backend.shutdown().await;
+    }
+}

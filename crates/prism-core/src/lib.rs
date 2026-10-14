@@ -270,7 +270,7 @@ mod lifecycle_tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(tmp.path().join(".codexprism/history").is_dir());
+        assert!(tmp.path().join(".git").is_dir());
     }
     #[test]
     fn headless_permission_failure_never_invokes_native_ui() {

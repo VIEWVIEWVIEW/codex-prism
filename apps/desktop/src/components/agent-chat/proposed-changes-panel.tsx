@@ -8,6 +8,8 @@ import { cn } from "@/lib/utils";
 
 export function ProposedChangesPanel() {
   const review = useAgentChatStore((s) => s.review);
+  const error = useAgentChatStore((s) => s.error);
+  const reload = useAgentChatStore((s) => s.reloadReview);
   const resolve = useAgentChatStore((s) => s.resolveReview);
   const keepAll = useAgentChatStore((s) => s.keepAllReview);
   const [busy, setBusy] = useState<string | null>(null);
@@ -31,6 +33,26 @@ export function ProposedChangesPanel() {
       aria-label="Review Codex changes"
       className="max-h-72 shrink-0 overflow-auto border-t"
     >
+      {error?.includes("changed on disk") && (
+        <div className="px-3 py-2 text-xs" role="alert">
+          <p>{error}</p>
+          <button
+            type="button"
+            className="mt-1 underline"
+            disabled={busy !== null}
+            onClick={async () => {
+              setBusy("__reload__");
+              try {
+                await reload();
+              } finally {
+                setBusy(null);
+              }
+            }}
+          >
+            Reload review from disk
+          </button>
+        </div>
+      )}
       {review.changes.length > 1 && (
         <div className="flex justify-end border-b px-3 py-2">
           <button

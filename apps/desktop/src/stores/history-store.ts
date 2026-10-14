@@ -1,10 +1,6 @@
+import { toast } from "sonner";
 import { create } from "zustand";
-import { invoke } from "@/lib/backend";
-import { createLogger } from "@/lib/debug/logger";
-
-const log = createLogger("history");
-
-// ─── Types ───
+import { invoke, listen, backend } from "@/lib/backend";
 
 export interface SnapshotInfo {
   id: string;
@@ -13,196 +9,232 @@ export interface SnapshotInfo {
   labels: string[];
   changed_files: string[];
 }
-
 export interface FileDiff {
   file_path: string;
   status: "added" | "modified" | "deleted";
   old_content: string | null;
   new_content: string | null;
 }
-
+export interface HistoryStatus {
+  includePrompt: boolean;
+  warning: string | null;
+  pending: number;
+  repositoryPath: string;
+  archivePath: string | null;
+  blockedReason: string | null;
+}
 interface HistoryState {
+  projectRoot: string | null;
+  projectId: string | null;
   snapshots: SnapshotInfo[];
+  status: HistoryStatus | null;
+  error: string | null;
   isLoading: boolean;
+  hasMore: boolean;
   selectedSnapshotId: string | null;
   diffResult: FileDiff[] | null;
   isDiffLoading: boolean;
   isRestoring: boolean;
   reviewingSnapshot: SnapshotInfo | null;
-
-  init: (projectRoot: string) => Promise<void>;
-  createSnapshot: (
-    projectRoot: string,
-    message: string,
-  ) => Promise<SnapshotInfo | null>;
-  loadSnapshots: (projectRoot: string) => Promise<void>;
-  loadMoreSnapshots: (projectRoot: string) => Promise<void>;
-  selectSnapshot: (id: string | null) => void;
-  loadDiff: (
-    projectRoot: string,
-    fromId: string,
-    toId: string,
-  ) => Promise<void>;
-  getFileAt: (
-    projectRoot: string,
+  init(root: string): Promise<void>;
+  createSnapshot(root: string, message: string): Promise<SnapshotInfo | null>;
+  loadSnapshots(root: string): Promise<void>;
+  loadMoreSnapshots(root: string): Promise<void>;
+  retry(root: string): Promise<void>;
+  setIncludePrompt(root: string, enabled: boolean): Promise<void>;
+  selectSnapshot(id: string | null): void;
+  loadDiff(root: string, fromId: string, toId: string): Promise<void>;
+  getFileAt(
+    root: string,
     snapshotId: string,
     filePath: string,
-  ) => Promise<string>;
-  restoreSnapshot: (
-    projectRoot: string,
-    snapshotId: string,
-  ) => Promise<SnapshotInfo>;
-  addLabel: (
-    projectRoot: string,
-    snapshotId: string,
-    label: string,
-  ) => Promise<void>;
-  removeLabel: (projectRoot: string, label: string) => Promise<void>;
-  startReview: (snapshot: SnapshotInfo) => void;
-  stopReview: () => void;
-  reset: () => void;
+  ): Promise<string>;
+  restoreSnapshot(root: string, snapshotId: string): Promise<SnapshotInfo>;
+  addLabel(root: string, snapshotId: string, label: string): Promise<void>;
+  removeLabel(root: string, label: string): Promise<void>;
+  startReview(snapshot: SnapshotInfo): void;
+  stopReview(): void;
+  reset(): void;
 }
-
 const PAGE_SIZE = 50;
-
-export const useHistoryStore = create<HistoryState>()((set, get) => ({
+let generation = 0;
+let request = 0;
+let subscription: Promise<unknown> | undefined;
+const initial = {
+  projectRoot: null,
+  projectId: null,
   snapshots: [],
+  status: null,
+  error: null,
   isLoading: false,
+  hasMore: true,
   selectedSnapshotId: null,
   diffResult: null,
   isDiffLoading: false,
   isRestoring: false,
   reviewingSnapshot: null,
-
-  startReview: (snapshot) => {
-    set({ reviewingSnapshot: snapshot });
-  },
-
-  stopReview: () => {
-    set({ reviewingSnapshot: null, diffResult: null });
-  },
-
-  init: async (projectRoot) => {
-    log.debug(`Initializing history for ${projectRoot}`);
-    await invoke("history_init", { projectRoot });
-  },
-
-  createSnapshot: async (projectRoot, message) => {
-    log.debug(`Creating snapshot: ${message}`);
-    const result = await invoke<SnapshotInfo | null>("history_snapshot", {
-      projectRoot,
-      message,
-    });
-    if (result) {
-      log.info(`Snapshot created: ${result.id.slice(0, 8)}`);
-      set((s) => ({ snapshots: [result, ...s.snapshots] }));
+};
+export const useHistoryStore = create<HistoryState>()((set, get) => ({
+  ...initial,
+  init: async (root) => {
+    if (get().projectRoot !== root) {
+      generation++;
+      set({ ...initial, projectRoot: root });
     }
-    return result;
+    const current = generation;
+    subscription ??= listen<{ projectId: string; warning?: string | null }>(
+      "project-history",
+      ({ payload }) => {
+        const s = useHistoryStore.getState();
+        if (s.projectId === payload.projectId && s.projectRoot) {
+          if (payload.warning)
+            toast.warning(`Git history needs attention: ${payload.warning}`, {
+              id: `history-${s.projectRoot}`,
+            });
+          void s.loadSnapshots(s.projectRoot);
+        }
+      },
+    ).catch(() => {
+      subscription = undefined;
+    });
+    try {
+      const project = await backend.projects.register(root);
+      if (generation !== current) return;
+      set({ projectId: project.id });
+      await invoke("history_init", { projectRoot: root });
+    } catch (e) {
+      if (generation === current) set({ error: String(e) });
+    }
+    if (generation === current) await get().loadSnapshots(root);
   },
-
-  loadSnapshots: async (projectRoot) => {
+  createSnapshot: async (root, message) => {
+    try {
+      return await invoke<SnapshotInfo | null>("history_snapshot", {
+        projectRoot: root,
+        message,
+      });
+    } finally {
+      if (get().projectRoot === root) await get().loadSnapshots(root);
+    }
+  },
+  loadSnapshots: async (root) => {
+    if (get().projectRoot !== root) return;
+    const current = generation;
+    const ticket = ++request;
     set({ isLoading: true });
     try {
-      const snapshots = await invoke<SnapshotInfo[]>("history_list", {
-        projectRoot,
-        limit: PAGE_SIZE,
-        offset: 0,
-      });
-      set({ snapshots });
+      const [snapshots, status] = await Promise.all([
+        invoke<SnapshotInfo[]>("history_list", {
+          projectRoot: root,
+          limit: Math.max(PAGE_SIZE, get().snapshots.length),
+          offset: 0,
+        }),
+        invoke<HistoryStatus>("history_status", { projectRoot: root }),
+      ]);
+      if (current === generation && ticket === request) {
+        if (status.warning && status.warning !== get().status?.warning)
+          toast.warning(`Git history needs attention: ${status.warning}`, {
+            id: `history-${root}`,
+          });
+        set({
+          snapshots,
+          status,
+          error: null,
+          hasMore:
+            snapshots.length >= Math.max(PAGE_SIZE, get().snapshots.length),
+        });
+      }
+    } catch (e) {
+      if (current === generation && ticket === request)
+        set({ error: String(e) });
     } finally {
-      set({ isLoading: false });
+      if (current === generation && ticket === request)
+        set({ isLoading: false });
     }
   },
-
-  loadMoreSnapshots: async (projectRoot) => {
-    const { snapshots, isLoading } = get();
-    if (isLoading) return;
+  loadMoreSnapshots: async (root) => {
+    if (get().projectRoot !== root || get().isLoading || !get().hasMore) return;
+    const current = generation;
+    const ticket = ++request;
     set({ isLoading: true });
     try {
       const more = await invoke<SnapshotInfo[]>("history_list", {
-        projectRoot,
+        projectRoot: root,
         limit: PAGE_SIZE,
-        offset: snapshots.length,
+        offset: get().snapshots.length,
       });
-      if (more.length > 0) {
-        set((s) => ({ snapshots: [...s.snapshots, ...more] }));
-      }
+      if (current === generation && ticket === request)
+        set((s) => ({
+          snapshots: [
+            ...new Map(
+              [...s.snapshots, ...more].map((s) => [s.id, s]),
+            ).values(),
+          ],
+          hasMore: more.length === PAGE_SIZE,
+        }));
+    } catch (e) {
+      if (current === generation && ticket === request)
+        set({ error: String(e) });
     } finally {
-      set({ isLoading: false });
+      if (current === generation && ticket === request)
+        set({ isLoading: false });
     }
   },
-
-  selectSnapshot: (id) => {
-    set({ selectedSnapshotId: id, diffResult: null });
+  retry: async (root) => {
+    try {
+      await invoke("history_retry", { projectRoot: root });
+    } finally {
+      await get().loadSnapshots(root);
+    }
   },
-
-  loadDiff: async (projectRoot, fromId, toId) => {
+  setIncludePrompt: async (root, enabled) => {
+    await invoke("history_set_prompt", { projectRoot: root, enabled });
+    await get().loadSnapshots(root);
+  },
+  selectSnapshot: (id) => set({ selectedSnapshotId: id, diffResult: null }),
+  loadDiff: async (root, fromId, toId) => {
+    const current = generation;
     set({ isDiffLoading: true, diffResult: null });
     try {
       const diffResult = await invoke<FileDiff[]>("history_diff", {
-        projectRoot,
+        projectRoot: root,
         fromId,
         toId,
       });
-      set({ diffResult });
+      if (current === generation) set({ diffResult });
     } finally {
-      set({ isDiffLoading: false });
+      if (current === generation) set({ isDiffLoading: false });
     }
   },
-
-  getFileAt: async (projectRoot, snapshotId, filePath) => {
-    return invoke<string>("history_file_at", {
-      projectRoot,
-      snapshotId,
-      filePath,
-    });
-  },
-
-  restoreSnapshot: async (projectRoot, snapshotId) => {
-    log.info(`Restoring snapshot: ${snapshotId.slice(0, 8)}`);
+  getFileAt: (root, snapshotId, filePath) =>
+    invoke("history_file_at", { projectRoot: root, snapshotId, filePath }),
+  restoreSnapshot: async (root, snapshotId) => {
+    const current = generation;
     set({ isRestoring: true });
     try {
-      const result = await invoke<SnapshotInfo>("history_restore", {
-        projectRoot,
+      return await invoke<SnapshotInfo>("history_restore", {
+        projectRoot: root,
         snapshotId,
       });
-      log.info(`Restored snapshot, new snapshot: ${result.id.slice(0, 8)}`);
-      set((s) => ({ snapshots: [result, ...s.snapshots] }));
-      return result;
     } finally {
-      set({ isRestoring: false });
+      if (current === generation) {
+        set({ isRestoring: false });
+        await get().loadSnapshots(root);
+      }
     }
   },
-
-  addLabel: async (projectRoot, snapshotId, label) => {
-    await invoke("history_add_label", { projectRoot, snapshotId, label });
-    set((s) => ({
-      snapshots: s.snapshots.map((snap) =>
-        snap.id === snapshotId
-          ? { ...snap, labels: [...snap.labels, label] }
-          : snap,
-      ),
-    }));
+  addLabel: async (root, snapshotId, label) => {
+    await invoke("history_add_label", { projectRoot: root, snapshotId, label });
+    await get().loadSnapshots(root);
   },
-
-  removeLabel: async (projectRoot, label) => {
-    await invoke("history_remove_label", { projectRoot, label });
-    set((s) => ({
-      snapshots: s.snapshots.map((snap) => ({
-        ...snap,
-        labels: snap.labels.filter((l) => l !== label),
-      })),
-    }));
+  removeLabel: async (root, label) => {
+    await invoke("history_remove_label", { projectRoot: root, label });
+    await get().loadSnapshots(root);
   },
-
-  reset: () =>
-    set({
-      snapshots: [],
-      isLoading: false,
-      selectedSnapshotId: null,
-      diffResult: null,
-      isDiffLoading: false,
-      isRestoring: false,
-      reviewingSnapshot: null,
-    }),
+  startReview: (snapshot) => set({ reviewingSnapshot: snapshot }),
+  stopReview: () => set({ reviewingSnapshot: null, diffResult: null }),
+  reset: () => {
+    generation++;
+    set(initial);
+  },
 }));

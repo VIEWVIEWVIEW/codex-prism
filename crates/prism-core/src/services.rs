@@ -14,6 +14,128 @@ pub(crate) async fn project_service(
     let _services = state.service_lock.lock().await;
     let project = projects::get(&app, &project_id)?;
     let root = project.root.to_string_lossy().to_string();
+    if operation == "review_refresh" {
+        let worker = app.clone();
+        return tokio::task::spawn_blocking(move || {
+            crate::codex::refresh_review(worker, project_id)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    if operation.starts_with("history_") {
+        if ["history_restore", "history_snapshot"].contains(&operation.as_str()) {
+            crate::codex::assert_unlocked(&app, &project_id)?;
+        }
+        let worker = app.clone();
+        let id = project_id.clone();
+        return tokio::task::spawn_blocking(move || {
+            if [
+                "history_init",
+                "history_snapshot",
+                "history_restore",
+                "history_retry",
+            ]
+            .contains(&operation.as_str())
+            {
+                if let Err(error) = crate::codex::settle_implicit_history(&worker, &id) {
+                    history::workflow::warn(&root, &error);
+                }
+            }
+            let str_arg = |key: &str| {
+                args[key]
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("Missing {key}"))
+            };
+            let result = (|| -> Result<Value, String> {
+                match operation.as_str() {
+                    "history_init" => {
+                        let baseline = {
+                            let _files =
+                                worker.inner.projects.0.lock().map_err(|e| e.to_string())?;
+                            crate::codex::history_baseline(&worker, &id)?
+                        };
+                        history::workflow::initialize(&root, Some(baseline))?;
+                        Ok(Value::Null)
+                    }
+                    "history_status" => history::workflow::status(&root),
+                    "history_set_prompt" => {
+                        history::workflow::set_prompt(
+                            &root,
+                            args["enabled"].as_bool().ok_or("Missing enabled")?,
+                        )?;
+                        Ok(Value::Null)
+                    }
+                    "history_retry" => {
+                        history::workflow::retry(&root)?;
+                        Ok(Value::Null)
+                    }
+                    "history_snapshot" => Ok(json!(history::history_snapshot(
+                        root.clone(),
+                        str_arg("message")?
+                    )?)),
+                    "history_restore" => Ok(json!(history::history_restore(
+                        root.clone(),
+                        str_arg("snapshotId")?
+                    )?)),
+                    "history_list" => Ok(json!(history::history_list(
+                        root.clone(),
+                        args["limit"].as_u64().unwrap_or(50) as u32,
+                        args["offset"].as_u64().unwrap_or(0) as u32
+                    )?)),
+                    "history_diff" => Ok(json!(history::history_diff(
+                        root.clone(),
+                        str_arg("fromId")?,
+                        str_arg("toId")?
+                    )?)),
+                    "history_file_at" => {
+                        let p = str_arg("filePath")?;
+                        projects::resolve(&project.root, &p)?;
+                        Ok(json!(history::history_file_at(
+                            root.clone(),
+                            str_arg("snapshotId")?,
+                            p
+                        )?))
+                    }
+                    "history_add_label" => {
+                        history::history_add_label(
+                            root.clone(),
+                            str_arg("snapshotId")?,
+                            str_arg("label")?,
+                        )?;
+                        Ok(Value::Null)
+                    }
+                    "history_remove_label" => {
+                        history::history_remove_label(root.clone(), str_arg("label")?)?;
+                        Ok(Value::Null)
+                    }
+                    _ => Err("Unsupported history operation".into()),
+                }
+            })();
+            if ![
+                "history_status",
+                "history_list",
+                "history_diff",
+                "history_file_at",
+            ]
+            .contains(&operation.as_str())
+            {
+                if let Err(e) = &result {
+                    history::workflow::warn(&root, e);
+                }
+                worker
+                    .inner
+                    .events
+                    .emit(crate::BackendEvent::HistoryChanged {
+                        project_id: id,
+                        warning: result.as_ref().err().cloned(),
+                    });
+            }
+            result
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    }
     let str_arg = |key: &str| -> Result<String, String> {
         args[key]
             .as_str()
@@ -47,42 +169,6 @@ pub(crate) async fn project_service(
             )
             .await?;
             Ok(json!(result))
-        }
-        "history_init" => {
-            history::history_init(root)?;
-            Ok(Value::Null)
-        }
-        "history_snapshot" => Ok(json!(history::history_snapshot(root, str_arg("message")?)?)),
-        "history_list" => Ok(json!(history::history_list(
-            root,
-            args["limit"].as_u64().unwrap_or(50) as u32,
-            args["offset"].as_u64().unwrap_or(0) as u32
-        )?)),
-        "history_diff" => Ok(json!(history::history_diff(
-            root,
-            str_arg("fromId")?,
-            str_arg("toId")?
-        )?)),
-        "history_file_at" => {
-            let file = str_arg("filePath")?;
-            projects::resolve(&project.root, &file)?;
-            Ok(json!(history::history_file_at(
-                root,
-                str_arg("snapshotId")?,
-                file
-            )?))
-        }
-        "history_restore" => Ok(json!(history::history_restore(
-            root,
-            str_arg("snapshotId")?
-        )?)),
-        "history_add_label" => {
-            history::history_add_label(root, str_arg("snapshotId")?, str_arg("label")?)?;
-            Ok(Value::Null)
-        }
-        "history_remove_label" => {
-            history::history_remove_label(root, str_arg("label")?)?;
-            Ok(Value::Null)
         }
         "project_venv_status" => Ok(json!(uv::project_venv_status(root))),
         "setup_project_venv" => Ok(json!(uv::setup_project_venv(app.clone(), root).await?)),

@@ -412,11 +412,6 @@ export function LatexEditor() {
     const compileStart = Date.now();
     try {
       await saveAllFiles();
-      // Pre-compile snapshot (fire-and-forget to avoid blocking compilation start)
-      useHistoryStore
-        .getState()
-        .createSnapshot(projectRoot, "[compile] Pre-compile")
-        .catch(() => {});
       const data = await compileLatex(projectRoot, targetPath);
       setPdfData(data, rootId);
     } catch (error) {

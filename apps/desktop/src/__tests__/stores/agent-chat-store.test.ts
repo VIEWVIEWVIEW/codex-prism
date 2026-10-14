@@ -18,6 +18,10 @@ vi.mock("@/lib/backend", () => ({
       subscribe: vi.fn(async () => () => {}),
       get: vi.fn(async () => ({ active: false, changes: [] })),
       resolve: vi.fn(),
+      resolveBatch: vi.fn(async () => ({
+        accepted: true,
+        historyWarning: null,
+      })),
     },
   },
 }));
@@ -93,10 +97,12 @@ describe("compilation after accepting review changes", () => {
     });
     vi.mocked(compileLatex).mockResolvedValueOnce(new Uint8Array([1]));
     await useAgentChatStore.getState().keepAllReview();
-    expect(vi.mocked(backend.review.resolve).mock.calls).toEqual([
-      ["p1", "included.tex", false],
-      ["p1", "main.tex", false],
-    ]);
+    expect(backend.review.resolveBatch).toHaveBeenCalledExactlyOnceWith(
+      "p1",
+      ["included.tex", "main.tex"],
+      false,
+      undefined,
+    );
     expect(doc.refreshFiles).toHaveBeenCalledOnce();
     expect(compileLatex).toHaveBeenCalledOnce();
     expect(useAgentChatStore.getState().review.changes).toEqual([]);
@@ -112,15 +118,15 @@ describe("compilation after accepting review changes", () => {
       review: { active: false, changes },
       locked: true,
     });
-    vi.mocked(backend.review.resolve)
-      .mockResolvedValueOnce(undefined)
-      .mockRejectedValueOnce(new Error("Review changed"));
+    vi.mocked(backend.review.resolveBatch).mockRejectedValueOnce(
+      new Error("Review changed"),
+    );
     vi.mocked(backend.review.get).mockResolvedValueOnce({
       active: false,
       changes: changes.slice(1),
     });
     await useAgentChatStore.getState().keepAllReview();
-    expect(backend.review.resolve).toHaveBeenCalledTimes(2);
+    expect(backend.review.resolveBatch).toHaveBeenCalledOnce();
     expect(compileLatex).not.toHaveBeenCalled();
     expect(useAgentChatStore.getState().review.changes).toEqual(
       changes.slice(1),
@@ -166,10 +172,11 @@ describe("compilation after accepting review changes", () => {
     });
     vi.mocked(compileLatex).mockRejectedValueOnce("Build failed");
     await useAgentChatStore.getState().resolveReview("main.tex", false);
-    expect(backend.review.resolve).toHaveBeenCalledWith(
+    expect(backend.review.resolveBatch).toHaveBeenCalledWith(
       "p1",
-      "main.tex",
+      ["main.tex"],
       false,
+      undefined,
     );
     expect(setCompileError).toHaveBeenCalledWith("Build failed", "main.tex");
     expect(setPdfData).not.toHaveBeenCalled();
@@ -209,6 +216,7 @@ describe("Codex turn lifecycle", () => {
       "xhigh",
       [],
       undefined,
+      "Fix equations",
     );
     expect(save.mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(backend.agent.send).mock.invocationCallOrder[0],

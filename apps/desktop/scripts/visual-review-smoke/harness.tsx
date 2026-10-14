@@ -5,8 +5,18 @@ import { PdfPreview } from "../../src/components/workspace/preview/pdf-preview";
 import { useDocumentStore } from "../../src/stores/document-store";
 import { useAgentChatStore } from "../../src/stores/agent-chat-store";
 import { useSettingsStore } from "../../src/stores/settings-store";
+import { HistoryPanel } from "../../src/components/workspace/history-panel";
+import { ProposedChangesPanel } from "../../src/components/agent-chat/proposed-changes-panel";
+import { useHistoryStore } from "../../src/stores/history-store";
+const historyMode = new URLSearchParams(location.search).has("history");
+const callbacks = new Map<number, (value: unknown) => void>();
+const listeners = new Map<string, number>();
 let completedCompiles = 0;
 const call = async (command: string, args: Record<string, unknown> = {}) => {
+  if (command === "plugin:event|listen") {
+    listeners.set(String(args.event), Number(args.handler));
+    return 1;
+  }
   const response = await fetch("http://127.0.0.1:19371", {
     method: "POST",
     body: JSON.stringify({ command, args }),
@@ -19,8 +29,17 @@ const call = async (command: string, args: Record<string, unknown> = {}) => {
 };
 (window as any).__TAURI_INTERNALS__ = {
   invoke: call,
-  transformCallback: () => 1,
+  transformCallback: (fn: (value: unknown) => void) => {
+    const id = callbacks.size + 1;
+    callbacks.set(id, fn);
+    return id;
+  },
 };
+if (historyMode)
+  setInterval(async () => {
+    for (const event of await call("events"))
+      callbacks.get(listeners.get(event.event)!)?.({ ...event, id: 1 });
+  }, 300);
 const { project, source } = await call("fixture");
 const file = {
   id: "main.tex",
@@ -49,6 +68,12 @@ useSettingsStore.setState({
 });
 (window as any).smoke = {
   call,
+  history: () => useHistoryStore.getState().snapshots,
+  initial: () => useHistoryStore.getState().snapshots.at(-1),
+  async restart() {
+    await call("restart");
+    await useHistoryStore.getState().loadSnapshots(project.root);
+  },
   compiling: () => useDocumentStore.getState().isCompiling,
   compilationCount: () => completedCompiles,
   autoCompiledPendingReview: () =>
@@ -68,9 +93,28 @@ useSettingsStore.setState({
   },
 };
 createRoot(document.getElementById("root")!).render(
-  <div style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
-    <PdfPreview />
-  </div>,
+  historyMode ? (
+    <div style={{ height: "100vh", display: "flex" }}>
+      <div style={{ width: 440 }}>
+        <HistoryPanel />
+      </div>
+      <div
+        style={{
+          flex: 1,
+          minWidth: 0,
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
+        <ProposedChangesPanel />
+        <PdfPreview />
+      </div>
+    </div>
+  ) : (
+    <div style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
+      <PdfPreview />
+    </div>
+  ),
 );
 
 (window as any).smoke.performance = async () => {

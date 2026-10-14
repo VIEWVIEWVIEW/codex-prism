@@ -133,6 +133,29 @@ impl Backend {
         images: Option<Vec<String>>,
         main_document: Option<String>,
     ) -> Result<serde_json::Value, String> {
+        self.codex_send_with_history_prompt(
+            project_id,
+            thread_id,
+            prompt,
+            model,
+            effort,
+            images,
+            main_document,
+            None,
+        )
+        .await
+    }
+    pub async fn codex_send_with_history_prompt(
+        &self,
+        project_id: String,
+        thread_id: Option<String>,
+        prompt: String,
+        model: Option<String>,
+        effort: Option<String>,
+        images: Option<Vec<String>>,
+        main_document: Option<String>,
+        history_prompt: Option<String>,
+    ) -> Result<Value, String> {
         let _operation = self.enter()?;
         codex::codex_send(
             self.clone(),
@@ -143,6 +166,7 @@ impl Backend {
             effort,
             images,
             main_document,
+            history_prompt,
         )
         .await
     }
@@ -173,6 +197,29 @@ impl Backend {
         let _operation = self.enter()?;
         codex::project_resolve_review(self.clone(), project_id, path, undo)
     }
+    pub async fn project_resolve_review_batch(
+        &self,
+        project_id: String,
+        paths: Vec<String>,
+        undo: bool,
+        expected_revision: Option<String>,
+    ) -> Result<Value, String> {
+        let admitted = self.enter()?;
+        let worker = self.clone();
+        tokio::spawn(async move {
+            let _operation = admitted;
+            let _service = worker.inner.codex.service_lock.lock().await;
+            let job = worker.clone();
+            tokio::task::spawn_blocking(move || {
+                codex::resolve_batch_reserved(job, project_id, paths, undo, expected_revision)
+            })
+            .await
+            .map_err(|e| e.to_string())?
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+
     pub async fn project_service(
         &self,
         project_id: String,

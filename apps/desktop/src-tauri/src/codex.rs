@@ -54,9 +54,19 @@ pub async fn codex_send(
     effort: Option<String>,
     images: Option<Vec<String>>,
     main_document: Option<String>,
+    history_prompt: Option<String>,
 ) -> Result<serde_json::Value, String> {
     backend
-        .codex_send_with_document(project_id, thread_id, prompt, model, effort, images, main_document)
+        .codex_send_with_history_prompt(
+            project_id,
+            thread_id,
+            prompt,
+            model,
+            effort,
+            images,
+            main_document,
+            history_prompt,
+        )
         .await
 }
 
@@ -106,4 +116,17 @@ pub async fn project_resolve_review(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn project_resolve_review_batch(
+    backend: tauri::State<'_, prism_core::Backend>,
+    project_id: String,
+    paths: Vec<String>,
+    undo: bool,
+    expected_revision: Option<String>,
+) -> Result<serde_json::Value, String> {
+    backend
+        .project_resolve_review_batch(project_id, paths, undo, expected_revision)
+        .await
 }

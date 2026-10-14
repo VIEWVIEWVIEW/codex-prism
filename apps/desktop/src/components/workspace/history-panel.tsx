@@ -1,24 +1,22 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { useEffect, useState } from "react";
 import {
+  CopyIcon,
   HistoryIcon,
   LoaderIcon,
-  TagIcon,
-  RotateCcwIcon,
-  CopyIcon,
   PlusIcon,
-  XIcon,
+  RotateCcwIcon,
 } from "lucide-react";
+import { toast } from "sonner";
 import { useHistoryStore, type SnapshotInfo } from "@/stores/history-store";
-import { useDocumentStore } from "@/stores/document-store";
-import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
+import { getCurrentPdfRootId, useDocumentStore } from "@/stores/document-store";
+import { useAgentChatStore } from "@/stores/agent-chat-store";
 import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuTrigger,
-} from "@/components/ui/context-menu";
+  compileLatex,
+  resolveCompileTarget,
+  formatCompileError,
+} from "@/lib/latex-compiler";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
@@ -26,346 +24,360 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-
-// ─── Helpers ───
-
-function formatRelativeTime(timestamp: number): string {
-  const now = Date.now() / 1000;
-  const diff = now - timestamp;
-  if (diff < 60) return "Just now";
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
-  const date = new Date(timestamp * 1000);
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
-function snapshotTypeLabel(message: string): string {
-  if (message.startsWith("[auto]")) return "Auto-save";
-  if (message.startsWith("[manual]")) return "Save";
-  if (message.startsWith("[compile]")) return "Compile";
-  if (message.startsWith("[claude]"))
-    return message.includes("Before") ? "Before Claude" : "After Claude";
-  if (message.startsWith("[restore]")) return "Restore";
-  if (message.startsWith("[init]")) return "Initial";
-  return message;
-}
-
-function snapshotTypeBadgeColor(message: string): string {
-  if (message.startsWith("[claude]"))
-    return "bg-violet-500/15 text-violet-600 dark:text-violet-400";
-  if (message.startsWith("[restore]"))
-    return "bg-amber-500/15 text-amber-600 dark:text-amber-400";
-  if (message.startsWith("[manual]"))
-    return "bg-blue-500/15 text-blue-600 dark:text-blue-400";
-  if (message.startsWith("[compile]"))
-    return "bg-green-500/15 text-green-600 dark:text-green-400";
-  return "bg-muted text-muted-foreground";
-}
-
-// ─── Panel ───
+import { cn } from "@/lib/utils";
 
 export function HistoryPanel({ maxHeight }: { maxHeight?: string }) {
-  const projectRoot = useDocumentStore((s) => s.projectRoot);
-  const snapshots = useHistoryStore((s) => s.snapshots);
-  const isLoading = useHistoryStore((s) => s.isLoading);
-  const isRestoring = useHistoryStore((s) => s.isRestoring);
-  const reviewingSnapshot = useHistoryStore((s) => s.reviewingSnapshot);
-  const init = useHistoryStore((s) => s.init);
-  const loadSnapshots = useHistoryStore((s) => s.loadSnapshots);
-  const loadMoreSnapshots = useHistoryStore((s) => s.loadMoreSnapshots);
-  const loadDiff = useHistoryStore((s) => s.loadDiff);
-  const startReview = useHistoryStore((s) => s.startReview);
-  const restoreSnapshot = useHistoryStore((s) => s.restoreSnapshot);
-  const addLabel = useHistoryStore((s) => s.addLabel);
-  const removeLabel = useHistoryStore((s) => s.removeLabel);
-  const openProject = useDocumentStore((s) => s.openProject);
-
-  // Compute linear history: when a [restore] snapshot appears,
-  // skip all snapshots between it and the restored target
-  const linearSnapshots = useMemo(() => {
-    const result: SnapshotInfo[] = [];
-    let skipUntilSha: string | null = null;
-
-    for (const snap of snapshots) {
-      if (skipUntilSha) {
-        // Skip until we find the snapshot that was restored to
-        if (snap.id.startsWith(skipUntilSha)) {
-          skipUntilSha = null;
-          result.push(snap);
-        }
-        continue;
-      }
-
-      result.push(snap);
-
-      // If this is a restore snapshot, extract the target SHA and start skipping
-      if (snap.message.startsWith("[restore]")) {
-        const match = snap.message.match(/Restored to ([a-f0-9]+)/);
-        if (match) {
-          skipUntilSha = match[1];
-        }
-      }
-    }
-    return result;
-  }, [snapshots]);
-
-  const [labelDialogOpen, setLabelDialogOpen] = useState(false);
-  const [labelTargetId, setLabelTargetId] = useState<string | null>(null);
-  const [labelValue, setLabelValue] = useState("");
-
-  // Init history when project opens
+  const root = useDocumentStore((s) => s.projectRoot);
+  const locked = useAgentChatStore((s) => s.locked);
+  const history = useHistoryStore();
+  const [dialog, setDialog] = useState<
+    "checkpoint" | "restore" | "label" | null
+  >(null);
+  const [target, setTarget] = useState<SnapshotInfo | null>(null);
+  const [description, setDescription] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    if (!projectRoot) return;
-    init(projectRoot)
-      .then(() => loadSnapshots(projectRoot))
-      .catch(console.error);
-  }, [projectRoot, init, loadSnapshots]);
-
-  // Infinite scroll
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const handleScroll = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el || !projectRoot || isLoading) return;
-    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40) {
-      loadMoreSnapshots(projectRoot);
+    setDialog(null);
+    setTarget(null);
+    setError(null);
+    if (!root) return;
+    void useHistoryStore.getState().init(root);
+    const refresh = () => void useHistoryStore.getState().loadSnapshots(root);
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [root]);
+  const run = async (action: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await action();
+    } catch (e) {
+      if (useDocumentStore.getState().projectRoot === root) setError(String(e));
+    } finally {
+      setBusy(false);
     }
-  }, [projectRoot, isLoading, loadMoreSnapshots]);
-
-  // Click to show diff in editor
-  const handleClick = useCallback(
-    async (snap: SnapshotInfo) => {
-      if (!projectRoot) return;
-      // Toggle off if already reviewing this snapshot
-      if (reviewingSnapshot?.id === snap.id) {
-        useHistoryStore.getState().stopReview();
-        return;
+  };
+  const saveBuffers = async () => {
+    const doc = useDocumentStore.getState();
+    if (doc.projectRoot !== root) throw new Error("Document changed");
+    await doc.saveAllFiles();
+    if (useDocumentStore.getState().files.some((f) => f.isDirty))
+      throw new Error("Save failed. Resolve unsaved files first.");
+  };
+  const confirm = () =>
+    run(async () => {
+      if (!root) return;
+      const operation = dialog;
+      if (operation === "label" && target)
+        await history.addLabel(root, target.id, description.trim());
+      else {
+        await saveBuffers();
+        if (operation === "checkpoint") {
+          const result = await history.createSnapshot(
+            root,
+            `docs(history): ${description.trim() || "save checkpoint"}`,
+          );
+          if (!result) toast.info("No new changes to checkpoint");
+        } else if (operation === "restore" && target) {
+          const doc = useDocumentStore.getState();
+          const pdfRoot = getCurrentPdfRootId() ?? doc.activeFileId;
+          await history.restoreSnapshot(root, target.id);
+          if (useDocumentStore.getState().projectRoot !== root) return;
+          history.stopReview();
+          await doc.refreshFiles();
+          const updated = useDocumentStore.getState();
+          const compile = resolveCompileTarget(pdfRoot, updated.files);
+          if (compile) {
+            updated.setIsCompiling(true);
+            try {
+              const pdf = await compileLatex(root, compile.targetPath);
+              if (useDocumentStore.getState().projectRoot === root)
+                updated.setPdfData(pdf, compile.rootId);
+            } catch (e) {
+              if (useDocumentStore.getState().projectRoot === root)
+                updated.setCompileError(formatCompileError(e), compile.rootId);
+            } finally {
+              if (useDocumentStore.getState().projectRoot === root)
+                updated.setIsCompiling(false);
+            }
+          } else updated.setPdfData(null);
+        }
       }
-      // Find parent snapshot (the one right after in the linear list)
-      const idx = linearSnapshots.findIndex((s) => s.id === snap.id);
-      const parent = linearSnapshots[idx + 1];
-      if (parent) {
-        await loadDiff(projectRoot, parent.id, snap.id);
-        startReview(snap);
-      }
-    },
-    [projectRoot, linearSnapshots, reviewingSnapshot, loadDiff, startReview],
-  );
-
-  const handleRestore = useCallback(
-    async (snapshotId: string) => {
-      if (!projectRoot) return;
-      // Stop any active review
-      useHistoryStore.getState().stopReview();
-      await restoreSnapshot(projectRoot, snapshotId);
-      // Re-open project and reload snapshot list
-      await openProject(projectRoot);
-      await loadSnapshots(projectRoot);
-    },
-    [projectRoot, restoreSnapshot, openProject, loadSnapshots],
-  );
-
-  const handleAddLabel = useCallback(async () => {
-    const label = labelValue.trim();
-    if (!label || !labelTargetId || !projectRoot) return;
-    await addLabel(projectRoot, labelTargetId, label);
-    setLabelDialogOpen(false);
-    setLabelValue("");
-    setLabelTargetId(null);
-  }, [projectRoot, labelTargetId, labelValue, addLabel]);
-
-  const openLabelDialog = useCallback((snapshotId: string) => {
-    setLabelTargetId(snapshotId);
-    setLabelValue("");
-    setLabelDialogOpen(true);
-  }, []);
-
-  if (!projectRoot) {
+      setDialog(null);
+    });
+  if (!root)
     return (
-      <div className="flex flex-col items-center gap-2 px-3 py-4 text-center">
-        <p className="text-muted-foreground text-xs">
-          Open a project to view history.
-        </p>
-      </div>
+      <p className="p-4 text-xs text-muted-foreground">
+        Open a document to view history.
+      </p>
     );
-  }
-
+  const blocked =
+    locked || busy || history.isRestoring || !!history.status?.blockedReason;
   return (
     <div className={cn("flex flex-col", maxHeight || "h-full")}>
-      {/* Header */}
       <div className="flex shrink-0 items-center justify-between border-b px-3 py-2">
-        <div className="flex items-center gap-2">
-          <HistoryIcon className="size-4 text-muted-foreground" />
-          <span className="font-medium text-sm">History</span>
-        </div>
+        <span className="flex items-center gap-2 text-sm font-medium">
+          <HistoryIcon className="size-4" />
+          History
+        </span>
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={locked || busy}
+          onClick={() => {
+            setDescription("");
+            setDialog("checkpoint");
+          }}
+        >
+          <PlusIcon className="size-3" />
+          Save checkpoint
+        </Button>
+      </div>
+      <div className="space-y-2 border-b px-3 py-2 text-xs">
+        <label
+          className="flex items-center gap-2"
+          title="Applies to future turns. Included prompts become part of Git history and accompany remote pushes."
+        >
+          <input
+            type="checkbox"
+            checked={history.status?.includePrompt ?? false}
+            disabled={busy || !history.status}
+            onChange={(e) =>
+              void run(() => history.setIncludePrompt(root, e.target.checked))
+            }
+          />
+          Include prompt in commits
+        </label>
+        {history.status?.repositoryPath && (
+          <button
+            className="flex max-w-full items-center gap-1 text-muted-foreground hover:underline"
+            title={history.status.repositoryPath}
+            onClick={() =>
+              void run(() =>
+                navigator.clipboard.writeText(history.status!.repositoryPath),
+              )
+            }
+          >
+            <CopyIcon className="size-3" />
+            Copy repository path
+          </button>
+        )}
+        {history.status?.archivePath && (
+          <p className="break-all text-muted-foreground">
+            Previous private history preserved at {history.status.archivePath}
+          </p>
+        )}
+        {(error ||
+          history.error ||
+          history.status?.warning ||
+          history.status?.blockedReason) && (
+          <div
+            role="status"
+            className="space-y-1 text-amber-700 dark:text-amber-400"
+          >
+            <p>
+              {error ||
+                history.error ||
+                history.status?.warning ||
+                history.status?.blockedReason}
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy || locked}
+              onClick={() => void run(() => history.retry(root))}
+            >
+              Retry history
+            </Button>
+          </div>
+        )}
       </div>
       <div
-        ref={scrollRef}
         className="min-h-0 flex-1 overflow-y-auto"
-        onScroll={handleScroll}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          if (el.scrollHeight - el.scrollTop - el.clientHeight < 40)
+            void history.loadMoreSnapshots(root);
+        }}
       >
-        {linearSnapshots.length === 0 && !isLoading ? (
-          <div className="px-3 py-4 text-center text-muted-foreground text-xs">
-            No history yet
-          </div>
-        ) : (
-          <div className="py-0.5">
-            {linearSnapshots.map((snap) => (
-              <SnapshotRow
-                key={snap.id}
-                snapshot={snap}
-                isSelected={reviewingSnapshot?.id === snap.id}
-                isRestoring={isRestoring}
-                onClick={() => handleClick(snap)}
-                onRestore={() => handleRestore(snap.id)}
-                onAddLabel={() => openLabelDialog(snap.id)}
-                onRemoveLabel={(label) =>
-                  projectRoot && removeLabel(projectRoot, label)
-                }
-                onCopySha={() => navigator.clipboard.writeText(snap.id)}
-              />
-            ))}
-          </div>
+        {!history.snapshots.length && !history.isLoading && (
+          <p className="p-4 text-xs text-muted-foreground">No commits yet</p>
         )}
-
-        {isLoading && (
-          <div className="flex items-center justify-center py-2">
-            <LoaderIcon className="size-3 animate-spin text-muted-foreground" />
+        {history.snapshots.map((snap) => {
+          const selected = history.selectedSnapshotId === snap.id;
+          return (
+            <div
+              key={snap.id}
+              className={cn(
+                "border-b px-3 py-2 text-xs",
+                selected && "bg-accent/50",
+              )}
+            >
+              <button
+                className="w-full text-left"
+                aria-expanded={selected}
+                onClick={() =>
+                  history.selectSnapshot(selected ? null : snap.id)
+                }
+              >
+                <p className="break-words font-medium">
+                  {snap.message.split("\n")[0]}
+                </p>
+                <p className="mt-1 text-muted-foreground">
+                  <span className="font-mono">{snap.id.slice(0, 8)}</span> ·{" "}
+                  {new Date(snap.timestamp * 1000).toLocaleString()} ·{" "}
+                  {snap.changed_files.length} files
+                </p>
+                {!!snap.labels.length && (
+                  <p className="mt-1 text-amber-700 dark:text-amber-400">
+                    {snap.labels.join(" · ")}
+                  </p>
+                )}
+              </button>
+              {selected && (
+                <div className="mt-2 space-y-2">
+                  <p className="break-words text-muted-foreground">
+                    {snap.changed_files.join(", ") ||
+                      "Initial repository state"}
+                  </p>
+                  <div className="flex flex-wrap gap-1">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        void run(() => navigator.clipboard.writeText(snap.id))
+                      }
+                    >
+                      <CopyIcon className="size-3" />
+                      Copy SHA
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => {
+                        setTarget(snap);
+                        setDescription("");
+                        setDialog("label");
+                      }}
+                    >
+                      Add label
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={blocked}
+                      title={
+                        locked
+                          ? "Resolve pending agent changes first"
+                          : (history.status?.blockedReason ?? undefined)
+                      }
+                      onClick={() => {
+                        setTarget(snap);
+                        setDialog("restore");
+                      }}
+                    >
+                      <RotateCcwIcon className="size-3" />
+                      Restore
+                    </Button>
+                  </div>
+                  {snap.labels.map((label) => (
+                    <button
+                      key={label}
+                      className="mr-2 text-muted-foreground hover:underline"
+                      disabled={busy}
+                      onClick={() =>
+                        void run(() => history.removeLabel(root, label))
+                      }
+                    >
+                      Remove label “{label}”
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {history.isLoading && (
+          <div className="flex justify-center p-3">
+            <LoaderIcon
+              aria-label="Loading history"
+              className="size-4 animate-spin"
+            />
           </div>
         )}
       </div>
-
-      {/* Label dialog */}
-      <Dialog open={labelDialogOpen} onOpenChange={setLabelDialogOpen}>
-        <DialogContent className="sm:max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Add Label</DialogTitle>
-          </DialogHeader>
-          <div className="py-4">
-            <Input
-              placeholder="e.g. Draft v1"
-              value={labelValue}
-              onChange={(e) => setLabelValue(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleAddLabel();
-              }}
-              autoFocus
-            />
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setLabelDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleAddLabel} disabled={!labelValue.trim()}>
-              Add
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
-
-// ─── Snapshot Row ───
-
-function SnapshotRow({
-  snapshot,
-  isSelected,
-  isRestoring,
-  onClick,
-  onRestore,
-  onAddLabel,
-  onRemoveLabel,
-  onCopySha,
-}: {
-  snapshot: SnapshotInfo;
-  isSelected: boolean;
-  isRestoring: boolean;
-  onClick: () => void;
-  onRestore: () => void;
-  onAddLabel: () => void;
-  onRemoveLabel: (label: string) => void;
-  onCopySha: () => void;
-}) {
-  const hasFiles = snapshot.changed_files.length > 0;
-
-  return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
-        <button
-          className={cn(
-            "group flex w-full items-start px-2.5 py-2 text-left transition-colors",
-            isSelected ? "bg-accent" : "hover:bg-accent/50",
-          )}
-          onClick={onClick}
+      {dialog !== null && (
+        <Dialog
+          open={true}
+          onOpenChange={(open) => {
+            if (!open && !busy) setDialog(null);
+          }}
         >
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1">
-              <span
-                className={cn(
-                  "rounded px-1.5 py-0.5 font-medium text-xs leading-tight",
-                  snapshotTypeBadgeColor(snapshot.message),
-                )}
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>
+                {dialog === "restore"
+                  ? "Restore this version?"
+                  : dialog === "label"
+                    ? "Add label"
+                    : "Save checkpoint"}
+              </DialogTitle>
+            </DialogHeader>
+            {dialog === "restore" ? (
+              <p className="text-sm">
+                Restore document files to {target?.id.slice(0, 8)}. Current
+                edits will be saved in a recovery checkpoint first. Later
+                commits remain in history.
+              </p>
+            ) : (
+              <Input
+                autoFocus
+                value={description}
+                placeholder={
+                  dialog === "label"
+                    ? "e.g. Submitted draft"
+                    : "Description (optional)"
+                }
+                onChange={(e) => setDescription(e.target.value)}
+                onKeyDown={(e) => {
+                  if (
+                    e.key === "Enter" &&
+                    !busy &&
+                    (dialog !== "label" || description.trim())
+                  )
+                    void confirm();
+                }}
+              />
+            )}
+            {error && (
+              <p role="alert" className="text-sm text-destructive">
+                {error}
+              </p>
+            )}
+            <DialogFooter>
+              <Button
+                variant="outline"
+                disabled={busy}
+                onClick={() => setDialog(null)}
               >
-                {snapshotTypeLabel(snapshot.message)}
-              </span>
-              <span className="text-muted-foreground text-xs">
-                {formatRelativeTime(snapshot.timestamp)}
-              </span>
-            </div>
-
-            {/* Labels */}
-            {snapshot.labels.length > 0 && (
-              <div className="mt-0.5 flex flex-wrap gap-0.5">
-                {snapshot.labels.map((label) => (
-                  <span
-                    key={label}
-                    className="inline-flex items-center gap-0.5 rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-600 text-xs dark:text-amber-400"
-                  >
-                    <TagIcon className="size-2" />
-                    {label}
-                    <button
-                      aria-label={`Remove label ${label}`}
-                      className="ml-0.5 rounded-sm opacity-0 hover:text-destructive group-hover:opacity-100"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onRemoveLabel(label);
-                      }}
-                    >
-                      <XIcon className="size-2" />
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
-
-            {/* Changed files summary */}
-            {hasFiles && (
-              <div className="mt-0.5 truncate text-muted-foreground text-xs">
-                {snapshot.changed_files
-                  .map((f) => f.split(/[/\\]/).pop())
-                  .join(", ")}
-              </div>
-            )}
-          </div>
-        </button>
-      </ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem onClick={onRestore} disabled={isRestoring}>
-          <RotateCcwIcon className="mr-2 size-3.5" />
-          Restore this version
-        </ContextMenuItem>
-        <ContextMenuItem onClick={onAddLabel}>
-          <PlusIcon className="mr-2 size-3.5" />
-          Add label
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem onClick={onCopySha}>
-          <CopyIcon className="mr-2 size-3.5" />
-          Copy SHA
-        </ContextMenuItem>
-      </ContextMenuContent>
-    </ContextMenu>
+                Cancel
+              </Button>
+              <Button
+                disabled={
+                  busy ||
+                  (dialog === "label" && !description.trim()) ||
+                  (dialog === "restore" && blocked)
+                }
+                onClick={() => void confirm()}
+              >
+                {busy ? "Working…" : dialog === "restore" ? "Restore" : "Save"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+    </div>
   );
 }

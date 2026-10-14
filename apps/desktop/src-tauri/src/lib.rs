@@ -496,6 +496,7 @@ pub fn run() {
             codex::codex_respond,
             codex::project_review,
             codex::project_resolve_review,
+            codex::project_resolve_review_batch,
             skills::install_scientific_skills_global,
             skills::import_skill_from_folder,
             skills::check_skills_installed,

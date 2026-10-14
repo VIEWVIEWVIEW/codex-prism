@@ -82,6 +82,24 @@ export function VisualReviewPanel({
       aria-label="Visual changes"
     >
       {error && <p role="alert">{error}</p>}
+      {error?.includes("changed on disk") && (
+        <button
+          type="button"
+          disabled={busy}
+          className="mb-2 underline"
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await useAgentChatStore.getState().reloadReview();
+              setError(useAgentChatStore.getState().error);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Reload review from disk
+        </button>
+      )}
       {(changes.length > 1 || items.length > 1) && (
         <button
           type="button"

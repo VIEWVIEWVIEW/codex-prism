@@ -4,7 +4,13 @@ use std::sync::Mutex;
 #[derive(Clone, Debug, PartialEq)]
 pub enum BackendEvent {
     Agent(Value),
-    ProjectReview { project_id: String },
+    HistoryChanged {
+        project_id: String,
+        warning: Option<String>,
+    },
+    ProjectReview {
+        project_id: String,
+    },
     SkillsInstallLog(String),
     UvInstallOutput(String),
     UvInstallComplete(bool),
@@ -13,6 +19,7 @@ impl BackendEvent {
     /// Existing desktop wire contract; network hosts may use their own envelope.
     pub fn name(&self) -> &'static str {
         match self {
+            Self::HistoryChanged { .. } => "project-history",
             Self::Agent(_) => "codex-event",
             Self::ProjectReview { .. } => "project-review",
             Self::SkillsInstallLog(_) => "skills-install-log",
@@ -23,6 +30,10 @@ impl BackendEvent {
     pub fn payload(&self) -> Value {
         match self {
             Self::Agent(value) => value.clone(),
+            Self::HistoryChanged {
+                project_id,
+                warning,
+            } => json!({"projectId":project_id,"warning":warning}),
             Self::ProjectReview { project_id } => json!({"projectId": project_id}),
             Self::SkillsInstallLog(value) | Self::UvInstallOutput(value) => json!(value),
             Self::UvInstallComplete(value) => json!(value),
