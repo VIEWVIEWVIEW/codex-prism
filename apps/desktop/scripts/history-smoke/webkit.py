@@ -40,11 +40,11 @@ def tick():
     elif stage == 2:
         evaluate("(()=>{const b=Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Keep all changes'); if(!window.edited || !b || b.disabled)return false; window.beforeKeep=window.smoke.compilationCount(); b.click(); return true;})()", lambda v: check(v, 3, 'Keep all clicked'))
     elif stage == 3:
-        evaluate("Boolean(window.smoke.history().some(s=>s.message.startsWith('docs(agent): accept 2 changed files')) && window.smoke.compilationCount()>window.beforeKeep && !window.smoke.compiling())", lambda v: check(v, 4, 'One acceptance commit appears automatically; PDF recompiled'))
+        evaluate("Boolean(window.smoke.history().some(s=>s.message.startsWith('docs(agent): ')) && window.smoke.compilationCount()>window.beforeKeep && !window.smoke.compiling())", lambda v: check(v, 4, 'One acceptance commit appears automatically; PDF recompiled'))
     elif stage == 4:
         evaluate("window.smoke.call('git_log').then(log=>{window.externalLog=log;return window.smoke.restart()}).then(()=>window.restarted=true).catch(e=>window.failure=String(e));true", lambda _: advance(5, 'Checking external git log and backend restart'))
     elif stage == 5:
-        evaluate("Boolean(window.restarted && window.externalLog.includes('docs(agent): accept 2 changed files') && window.smoke.history().some(s=>s.id===window.initialId))", lambda v: check(v, 6, 'External Git and recovered UI show the same history'))
+        evaluate("Boolean(window.restarted && window.externalLog.includes('docs(agent): ') && window.smoke.history().some(s=>s.id===window.initialId))", lambda v: check(v, 6, 'External Git and recovered UI show the same history'))
     elif stage == 6:
         evaluate("(()=>{const b=Array.from(document.querySelectorAll('button')).find(b=>b.textContent.includes('docs(history): initial document'));if(!b)return false;b.click();return true;})()", lambda v: check(v, 7, 'Selected initial commit without opening a source diff'))
     elif stage == 7:

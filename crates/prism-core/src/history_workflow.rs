@@ -652,14 +652,7 @@ pub(crate) fn accept(
                     .ok()
                     .is_some_and(|p| !repo.is_path_ignored(p).unwrap_or(true)))
     });
-    let mut message = if patch.len() == 1 {
-        format!(
-            "docs(agent): accept changes to {}",
-            patch.keys().next().ok_or("Empty acceptance")?
-        )
-    } else {
-        format!("docs(agent): accept {} changed files", patch.len())
-    };
+    let mut message = super::message::acceptance_message(&tracked, &patch);
     if !prompts.is_empty() {
         message.push_str("\n\nUser prompts:\n");
         message.push_str(&prompts.join("\n\n---\n\n"));
@@ -1061,7 +1054,9 @@ mod tests {
         .unwrap();
         let repo = open_repo(root).unwrap();
         let message = head(&repo).unwrap().message().unwrap().to_owned();
-        assert!(message.starts_with("docs(agent): accept 2 changed files"));
+        assert!(message.starts_with("docs(agent): "));
+        assert!(message.contains("main.tex: revise"));
+        assert!(message.contains("image.png: add asset"));
         assert!(message.contains("Improve the introduction"));
         assert!(message.contains("Keep it short"));
         let remote = tempfile::tempdir().unwrap();

@@ -1,6 +1,8 @@
 use git2::{DiffOptions, Oid, Repository, Signature, Sort};
 #[path = "history_workflow.rs"]
 pub(crate) mod workflow;
+#[path = "history_message.rs"]
+mod message;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
