@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 export function ProposedChangesPanel() {
   const review = useAgentChatStore((s) => s.review);
   const resolve = useAgentChatStore((s) => s.resolveReview);
+  const keepAll = useAgentChatStore((s) => s.keepAllReview);
   const [busy, setBusy] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null | undefined>(
     undefined,
@@ -30,6 +31,26 @@ export function ProposedChangesPanel() {
       aria-label="Review Codex changes"
       className="max-h-72 shrink-0 overflow-auto border-t"
     >
+      {review.changes.length > 1 && (
+        <div className="flex justify-end border-b px-3 py-2">
+          <button
+            type="button"
+            disabled={busy !== null}
+            className="rounded-full bg-green-600 px-3 py-1 text-xs font-medium text-white hover:bg-green-700 focus-visible:outline focus-visible:outline-ring disabled:opacity-50"
+            onClick={async () => {
+              if (busy) return;
+              setBusy("__all__");
+              try {
+                await keepAll();
+              } finally {
+                setBusy(null);
+              }
+            }}
+          >
+            {busy === "__all__" ? "Keeping all…" : "Keep all changes"}
+          </button>
+        </div>
+      )}
       {review.changes.map((change) => (
         <FileReview
           key={change.path}

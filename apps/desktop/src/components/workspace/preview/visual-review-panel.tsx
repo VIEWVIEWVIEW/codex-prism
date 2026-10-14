@@ -59,11 +59,13 @@ export function VisualReviewPanel({
       ?.querySelector(`[data-selected="true"]`)
       ?.scrollIntoView({ block: "nearest" });
   }, [selected]);
-  async function resolve(path: string, undo: boolean) {
+  async function resolve(path: string | null, undo: boolean) {
+    if (busy) return;
     setBusy(true);
     setError(null);
     try {
-      await useAgentChatStore.getState().resolveReview(path, undo);
+      if (path === null) await useAgentChatStore.getState().keepAllReview();
+      else await useAgentChatStore.getState().resolveReview(path, undo);
       const failure = useAgentChatStore.getState().error;
       if (failure) throw new Error(failure);
     } catch (e) {
@@ -80,6 +82,16 @@ export function VisualReviewPanel({
       aria-label="Visual changes"
     >
       {error && <p role="alert">{error}</p>}
+      {(changes.length > 1 || items.length > 1) && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void resolve(null, false)}
+          className="mb-3 rounded-full bg-green-600 px-3 py-1 font-medium text-white hover:bg-green-700 focus-visible:outline focus-visible:outline-ring disabled:opacity-50"
+        >
+          Keep all changes
+        </button>
+      )}
       {items.map((item, index) => (
         <div key={item.id}>
           {item.quality === "unplaced" &&

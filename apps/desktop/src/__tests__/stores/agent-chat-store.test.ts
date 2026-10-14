@@ -79,6 +79,54 @@ describe("compilation after accepting review changes", () => {
     oldContent: "old",
     newContent: "new",
   };
+  it("keeps every pending file and refreshes and recompiles only once", async () => {
+    const changes = [remaining, { ...remaining, path: "main.tex" }];
+    useAgentChatStore.setState({
+      review: { active: false, changes },
+      locked: true,
+    });
+    const doc = useDocumentStore.getState();
+    Object.assign(doc, { setPdfData: vi.fn(), setIsCompiling: vi.fn() });
+    vi.mocked(resolveCompileTarget).mockReturnValueOnce({
+      rootId: "main.tex",
+      targetPath: "main.tex",
+    });
+    vi.mocked(compileLatex).mockResolvedValueOnce(new Uint8Array([1]));
+    await useAgentChatStore.getState().keepAllReview();
+    expect(vi.mocked(backend.review.resolve).mock.calls).toEqual([
+      ["p1", "included.tex", false],
+      ["p1", "main.tex", false],
+    ]);
+    expect(doc.refreshFiles).toHaveBeenCalledOnce();
+    expect(compileLatex).toHaveBeenCalledOnce();
+    expect(useAgentChatStore.getState().review.changes).toEqual([]);
+    expect(useAgentChatStore.getState().locked).toBe(false);
+  });
+  it("stops a failed Keep all and refreshes the remaining decisions", async () => {
+    const changes = [
+      remaining,
+      { ...remaining, path: "main.tex" },
+      { ...remaining, path: "last.tex" },
+    ];
+    useAgentChatStore.setState({
+      review: { active: false, changes },
+      locked: true,
+    });
+    vi.mocked(backend.review.resolve)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("Review changed"));
+    vi.mocked(backend.review.get).mockResolvedValueOnce({
+      active: false,
+      changes: changes.slice(1),
+    });
+    await useAgentChatStore.getState().keepAllReview();
+    expect(backend.review.resolve).toHaveBeenCalledTimes(2);
+    expect(compileLatex).not.toHaveBeenCalled();
+    expect(useAgentChatStore.getState().review.changes).toEqual(
+      changes.slice(1),
+    );
+    expect(useAgentChatStore.getState().error).toContain("Review changed");
+  });
   for (const changes of [[], [remaining]]) {
     it(`recompiles after Keep with ${changes.length} files still pending`, async () => {
       const doc = useDocumentStore.getState();

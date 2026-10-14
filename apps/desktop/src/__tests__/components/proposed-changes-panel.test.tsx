@@ -19,6 +19,7 @@ const { state } = vi.hoisted(() => ({
       ],
     },
     resolveReview: vi.fn(async (_path: string, _undo: boolean) => {}),
+    keepAllReview: vi.fn(async () => {}),
   },
 }));
 vi.mock("@/stores/agent-chat-store", () => ({
@@ -30,6 +31,29 @@ vi.mock("@/lib/review-diff-client", () => ({
   ),
 }));
 afterEach(() => vi.clearAllMocks());
+it("puts Keep all before file controls only when several files have changes", async () => {
+  (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+  const host = document.createElement("div");
+  const root = createRoot(host);
+  const original = state.review.changes;
+  try {
+    await act(async () => root.render(<ProposedChangesPanel />));
+    expect(host.textContent).not.toContain("Keep all changes");
+    state.review.changes = [
+      ...original,
+      { ...original[0], path: "included.tex" },
+    ];
+    await act(async () => root.render(<ProposedChangesPanel />));
+    const first = host.querySelector<HTMLButtonElement>("button")!;
+    expect(first.textContent).toBe("Keep all changes");
+    await act(async () => first.click());
+    expect(state.keepAllReview).toHaveBeenCalledOnce();
+    expect(state.resolveReview).not.toHaveBeenCalled();
+  } finally {
+    state.review.changes = original;
+    await act(async () => root.unmount());
+  }
+});
 it("shows changed lines with context without duplicating it", () => {
   const rows = reviewDiff("before\nold\nafter", "before\nnew\nafter");
   expect(rows.map((r) => [r.kind, r.text])).toEqual([

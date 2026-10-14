@@ -60,7 +60,8 @@ interface ChatState {
   cancelExecution(): Promise<void>;
   resumeSession(id: string, title?: string): Promise<void>;
   refreshReview(): Promise<void>;
-  resolveReview(path: string, undo: boolean): Promise<void>;
+  resolveReview(path: string | string[], undo: boolean): Promise<void>;
+  keepAllReview(): Promise<void>;
   respond(request: AgentEvent, result: unknown): Promise<void>;
   handleEvent(event: AgentEvent): void;
 }
@@ -217,12 +218,24 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
       set({ review, locked: review.active || review.changes.length > 0 });
     });
   },
+  keepAllReview: async () => {
+    const review = get().review;
+    if (review.active) return;
+    await get().resolveReview(
+      review.changes.map((change) => change.path),
+      false,
+    );
+  },
   resolveReview: async (path, undo) => {
     const id = get().projectId;
-    if (!id) return;
+    const paths = Array.isArray(path) ? path : [path];
+    if (!id || !paths.length) return;
     set({ error: null });
     try {
-      await backend.review.resolve(id, path, undo);
+      for (const file of paths) {
+        if (get().projectId !== id) return;
+        await backend.review.resolve(id, file, undo);
+      }
       await get().refreshReview();
       if (
         get().projectId !== id ||
@@ -260,7 +273,13 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
         }
       }
     } catch (e) {
-      set({ error: String(e) });
+      if (get().projectId === id) {
+        // Reflect any decisions already saved before a batch failed.
+        await get()
+          .refreshReview()
+          .catch(() => {});
+        if (get().projectId === id) set({ error: String(e) });
+      }
     }
   },
   sendPrompt: async (prompt, context) => {
