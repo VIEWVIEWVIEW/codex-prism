@@ -200,6 +200,7 @@ export interface CaptureResult {
 interface PdfViewerProps {
   data: ArrayBuffer;
   artifactId?: string;
+  sourceLocation?: { page: number; x: number; y: number } | null;
   selectedRegion?: { page: number; x: number; y: number };
   onPageClick?: (page: number, x: number, y: number) => void;
   renderOverlay?: (page: number) => React.ReactNode;
@@ -227,6 +228,7 @@ export const PdfViewer = memo(function PdfViewer({
   data,
   artifactId,
   selectedRegion,
+  sourceLocation,
   onPageClick,
   renderOverlay,
   scale,
@@ -557,6 +559,23 @@ export const PdfViewer = memo(function PdfViewer({
         selectedRegion.y * scale -
         60;
   }, [selectedRegion?.page, selectedRegion?.x, selectedRegion?.y, pageSizes]);
+
+  useEffect(() => {
+    if (!sourceLocation) return;
+    const container = containerRef.current;
+    const page = container?.querySelector(
+      `[data-page-number="${sourceLocation.page}"]`,
+    );
+    if (container && page) {
+      container.scrollTop +=
+        page.getBoundingClientRect().top -
+        container.getBoundingClientRect().top +
+        sourceLocation.y * scale -
+        60;
+    }
+    // Each click creates a new location, so clicking the same heading again
+    // restores its position without changing zoom or moving editor focus.
+  }, [sourceLocation, pageSizes]);
 
   // IntersectionObserver for lazy page rendering — only when active
   useEffect(() => {

@@ -3,6 +3,7 @@ const projectServices = new Set([
   "compile_latex",
   "load_existing_pdf",
   "synctex_edit",
+  "synctex_view",
   "history_init",
   "history_status",
   "history_set_prompt",

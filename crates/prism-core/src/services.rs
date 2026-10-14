@@ -158,6 +158,20 @@ pub(crate) async fn project_service(
             let state = &app.inner.latex;
             Ok(json!(latex::compile_latex(&state, root, main).await?))
         }
+        "synctex_view" => {
+            let main = str_arg("mainFile")?;
+            let file = str_arg("filePath")?;
+            projects::resolve(&project.root, &main)?;
+            projects::resolve(&project.root, &file)?;
+            let line = args["line"].as_u64().and_then(|v| u32::try_from(v).ok())
+                .filter(|v| *v > 0).ok_or("Invalid source line")?;
+            let source_line = str_arg("sourceLine")?;
+            let revision = str_arg("pdfRevision")?;
+            tokio::task::spawn_blocking(move || {
+                latex::synctex_view(&root, &main, &file, line, &source_line, &revision)
+                    .map(|location| json!(location))
+            }).await.map_err(|e| e.to_string())?
+        }
         "synctex_edit" => {
             let state = &app.inner.latex;
             let result = latex::synctex_edit(

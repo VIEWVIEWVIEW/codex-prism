@@ -1,6 +1,7 @@
 import { memo, useEffect, useState } from "react";
 import { ListIcon } from "lucide-react";
 import { parseTableOfContents, type TocItem } from "@/lib/latex-outline";
+import { usePdfNavigationStore } from "@/stores/pdf-navigation-store";
 import { useDocumentStore } from "@/stores/document-store";
 
 const OutlineEntries = memo(function OutlineEntries({
@@ -17,6 +18,15 @@ const OutlineEntries = memo(function OutlineEntries({
     for (let i = 0; i < line - 1 && i < lines.length; i++)
       position += lines[i].length + 1;
     state.requestJumpToPosition(position);
+    const file = state.files.find((file) => file.id === state.activeFileId);
+    if (state.projectRoot && file?.type === "tex") {
+      usePdfNavigationStore.getState().navigate({
+        projectRoot: state.projectRoot,
+        filePath: file.relativePath,
+        line,
+        sourceLine: lines[line - 1] ?? "",
+      });
+    }
   }
   return toc.length ? (
     toc.map((item, index) => (

@@ -1115,6 +1115,73 @@ pub(crate) async fn compile_latex(
     }
 }
 
+/// Resolve an outline link only against the PDF currently displayed by the client.
+pub(crate) fn synctex_view(
+    project_dir: &str,
+    main_file: &str,
+    file: &str,
+    line: u32,
+    source_line: &str,
+    pdf_revision: &str,
+) -> Result<Option<SourceBox>, String> {
+    let root = Path::new(project_dir);
+    let Some((pdf, bytes)) = find_existing_pdf(root, main_file)? else {
+        return Ok(None);
+    };
+    if crate::projects::revision(&bytes) != pdf_revision {
+        return Ok(None);
+    }
+    let work = pdf.parent().ok_or("Invalid PDF directory")?;
+    let gz = pdf.with_extension("synctex.gz");
+    let plain = pdf.with_extension("synctex");
+    let data = if gz.exists() {
+        let compressed = std::fs::read(gz).map_err(|e| e.to_string())?;
+        let mut data = String::new();
+        flate2::read::GzDecoder::new(&compressed[..])
+            .read_to_string(&mut data)
+            .map_err(|e| e.to_string())?;
+        data
+    } else if plain.exists() {
+        std::fs::read_to_string(plain).map_err(|e| e.to_string())?
+    } else {
+        return Ok(None);
+    };
+    // Builds use a copied source tree. Check the requested heading against it
+    // so unsaved line insertions cannot send the PDF to unrelated text.
+    let source_root = if work.starts_with(root.join(".prism/build")) {
+        work
+    } else {
+        root
+    };
+    let source = crate::projects::resolve(source_root, file)?;
+    let Ok(text) = std::fs::read_to_string(source) else {
+        return Ok(None);
+    };
+    if text
+        .lines()
+        .nth(line.saturating_sub(1) as usize)
+        .map(str::trim)
+        != Some(source_line.trim())
+    {
+        return Ok(None);
+    }
+    let mut boxes = forward_synctex(&data, work);
+    // PDFs built beside their source can record project-relative absolute inputs.
+    if work != root {
+        boxes.extend(forward_synctex(&data, root));
+    }
+    Ok(boxes
+        .into_iter()
+        .filter(|b| b.file == file && b.line >= line && b.line <= line.saturating_add(2))
+        .min_by(|a, b| {
+            a.line
+                .abs_diff(line)
+                .cmp(&b.line.abs_diff(line))
+                .then(a.page.cmp(&b.page))
+                .then(a.y.total_cmp(&b.y))
+        }))
+}
+
 pub(crate) async fn synctex_edit(
     state: &LatexCompilerState,
     project_dir: String,
@@ -2270,4 +2337,77 @@ pub(crate) fn forward_synctex(data: &str, root: &Path) -> Vec<SourceBox> {
         }
     }
     boxes
+}
+
+#[cfg(test)]
+mod outline_navigation_tests {
+    use super::*;
+    #[tokio::test]
+    #[ignore = "requires local TeX Live"]
+    async fn real_compiled_section_in_included_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("main.tex"), "\\documentclass{article}\n\\begin{document}\n\\section{First}\nFirst page.\n\\newpage\n\\input{chapter}\n\\end{document}\n").unwrap();
+        std::fs::write(
+            root.join("chapter.tex"),
+            "\\section{Results}\nSecond page.\n",
+        )
+        .unwrap();
+        let bytes = compile_latex(
+            &LatexCompilerState::default(),
+            root.to_str().unwrap().into(),
+            "main.tex".into(),
+        )
+        .await
+        .unwrap();
+        let found = synctex_view(
+            root.to_str().unwrap(),
+            "main.tex",
+            "chapter.tex",
+            1,
+            "\\section{Results}",
+            &crate::projects::revision(&bytes),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(found.page, 2);
+        assert!(found.y > 0.0 && found.y < 400.0);
+    }
+    #[test]
+    fn locates_included_heading_and_rejects_stale_pdf_or_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let work = root.join(".prism/build");
+        std::fs::create_dir_all(work.join("chapters")).unwrap();
+        std::fs::create_dir_all(root.join("chapters")).unwrap();
+        std::fs::write(root.join("main.tex"), "\\input{chapters/results}").unwrap();
+        for path in [
+            root.join("chapters/results.tex"),
+            work.join("chapters/results.tex"),
+        ] {
+            std::fs::write(path, "\\section{Results}\nContent").unwrap();
+        }
+        let bytes = b"%PDF-test";
+        std::fs::write(work.join("main.pdf"), bytes).unwrap();
+        std::fs::write(work.join("main.synctex"), "Input:1:./chapters/results.tex\nMagnification:1000\nUnit:65536\nContent:\n{3\n(1,1:50,120:100,12,0\n)\n}3\n").unwrap();
+        let revision = crate::projects::revision(bytes);
+        let locate = |heading: &str, hash: &str| {
+            synctex_view(
+                root.to_str().unwrap(),
+                "main.tex",
+                "chapters/results.tex",
+                1,
+                heading,
+                hash,
+            )
+            .unwrap()
+        };
+        let found = locate("\\section{Results}", &revision).unwrap();
+        assert_eq!(found.page, 3);
+        assert!(found.y > 100.0);
+        assert!(locate("\\section{Other}", &revision).is_none());
+        assert!(locate("\\section{Results}", "old-pdf").is_none());
+        std::fs::remove_file(work.join("main.synctex")).unwrap();
+        assert!(locate("\\section{Results}", &revision).is_none());
+    }
 }

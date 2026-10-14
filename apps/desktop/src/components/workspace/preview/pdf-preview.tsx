@@ -28,6 +28,7 @@ import {
 } from "@/stores/document-store";
 import { useHistoryStore } from "@/stores/history-store";
 import { useAgentChatStore } from "@/stores/agent-chat-store";
+import { usePdfSourceNavigation } from "@/hooks/use-pdf-source-navigation";
 import { useAutoRecompile } from "@/hooks/use-auto-recompile";
 import { useSettingsStore } from "@/stores/settings-store";
 import { Button } from "@/components/ui/button";
@@ -233,6 +234,20 @@ export function PdfPreview() {
     null,
   );
   const previewContainerRef = useRef<HTMLDivElement>(null);
+
+  const sourceLocation = usePdfSourceNavigation({
+    projectRoot,
+    projectId: useDocumentStore((state) => state.projectId),
+    mainFile: files.find((file) => file.id === currentRootFileId)?.relativePath,
+    activeFilePath: activeFile?.relativePath,
+    data: visual.active
+      ? visual.bytes.current
+      : pdfData
+        ? getPdfArrayBuffer(pdfData)
+        : null,
+    artifactId: visual.active ? visual.metadata.after : undefined,
+    enabled: !isCompiling && !compileError,
+  });
 
   const handleTextClick = useCallback(
     (text: string) => {
@@ -875,6 +890,7 @@ export function PdfPreview() {
                       ? visual.bytes.current!
                       : getPdfArrayBuffer(data)
                   }
+                  sourceLocation={isActive ? sourceLocation : null}
                   selectedRegion={
                     isActive && visual.active
                       ? visual.items.find((c) => c.id === visual.selected)

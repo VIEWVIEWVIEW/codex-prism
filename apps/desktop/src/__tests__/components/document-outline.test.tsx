@@ -2,13 +2,22 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import { DocumentOutline } from "@/components/workspace/document-outline";
+import { usePdfNavigationStore } from "@/stores/pdf-navigation-store";
 import { useDocumentStore } from "@/stores/document-store";
 vi.mock("@/stores/document-store", async () => {
   const { create } = await import("zustand");
   return {
     useDocumentStore: create(() => ({
       activeFileId: "main.tex",
-      files: [{ id: "main.tex", content: "\\section{Original}" }],
+      projectRoot: "/paper",
+      files: [
+        {
+          id: "main.tex",
+          type: "tex",
+          relativePath: "main.tex",
+          content: "\\section{Original}",
+        },
+      ],
       requestJumpToPosition: vi.fn(),
     })),
   };
@@ -39,6 +48,12 @@ it("shows headings immediately on open, then updates after typing pauses", () =>
     expect(
       useDocumentStore.getState().requestJumpToPosition,
     ).toHaveBeenCalledWith(10);
+    expect(usePdfNavigationStore.getState().request).toEqual({
+      projectRoot: "/paper",
+      filePath: "main.tex",
+      line: 2,
+      sourceLine: "\\section{Latest edit}",
+    });
   } finally {
     act(() => root.unmount());
     vi.useRealTimers();
