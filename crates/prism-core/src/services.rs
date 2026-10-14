@@ -7,6 +7,11 @@ pub(crate) async fn project_service(
     operation: String,
     args: Value,
 ) -> Result<Value, String> {
+    if operation == "optimize_pdf" {
+        projects::get(&app, &project_id)?;
+        let encoded = args["pdfBase64"].as_str().ok_or("Missing PDF data")?.to_owned();
+        return crate::pdf_export::optimize(&app, encoded).await;
+    }
     if operation.starts_with("visual_") {
         return crate::visual_review::service(&app, &project_id, &operation, args).await;
     }

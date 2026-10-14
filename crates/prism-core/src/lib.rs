@@ -5,6 +5,7 @@ mod codex;
 pub mod discovery;
 mod events;
 mod history;
+mod pdf_export;
 pub mod latex;
 pub mod projects;
 mod review_storage;

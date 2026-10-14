@@ -576,7 +576,7 @@ async fn preview_cancelled(cancel: &mut tokio::sync::watch::Receiver<bool>) {
 }
 
 /// Owned preview subprocesses: timeout/cancellation kills and reaps the compiler.
-async fn run_preview_program(
+pub(crate) async fn run_preview_program(
     program: &Path,
     args: &[&str],
     dir: &Path,

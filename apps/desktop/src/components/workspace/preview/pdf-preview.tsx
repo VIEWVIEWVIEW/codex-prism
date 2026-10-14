@@ -10,14 +10,12 @@ import {
   RefreshCwIcon,
   MinusIcon,
   PlusIcon,
-  DownloadIcon,
   HistoryIcon,
   MousePointerClickIcon,
   CrosshairIcon,
   ChevronUpIcon,
   ChevronDownIcon,
 } from "lucide-react";
-import { writeFile } from "@tauri-apps/plugin-fs";
 import { backend } from "@/lib/backend";
 import {
   useDocumentStore,
@@ -58,7 +56,7 @@ import {
   SelectionToolbar,
   type ToolbarAction,
 } from "@/components/workspace/editor/selection-toolbar";
-import { save } from "@/lib/backend/desktop-host";
+import { PdfExportButton } from "./pdf-export-button";
 import {
   PdfViewer,
   type PdfTextSelection,
@@ -553,34 +551,6 @@ export function PdfPreview() {
   const zoomOut = () => {
     setFitMode(null);
     setScale((s) => Math.max(0.25, s - 0.1));
-  };
-
-  const handleExport = async () => {
-    const currentPdf = getCurrentPdfBytes();
-    if (!currentPdf) return;
-    const projectName =
-      projectRoot
-        ?.replace(/[\\/]+$/, "")
-        .split(/[\\/]/)
-        .pop() || "document";
-    const now = new Date();
-    const timestamp = [
-      now.getFullYear(),
-      now.getMonth() + 1,
-      now.getDate(),
-      now.getHours(),
-      now.getMinutes(),
-    ]
-      .map((part) => String(part).padStart(2, "0"))
-      .join("-");
-    const defaultName = `${projectName}-${timestamp}.pdf`;
-    const filePath = await save({
-      title: "Export PDF",
-      defaultPath: defaultName,
-      filters: [{ name: "PDF", extensions: ["pdf"] }],
-    });
-    if (!filePath) return;
-    await writeFile(filePath, new Uint8Array(currentPdf));
   };
 
   const handleCurrentPageChange = useCallback(
@@ -1221,15 +1191,14 @@ export function PdfPreview() {
                 </kbd>
               </Button>
               <div className="mx-1 @[34rem]/pv:block hidden h-4 w-px bg-border" />
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-7"
-                onClick={handleExport}
-                title="Export PDF"
-              >
-                <DownloadIcon className="size-3.5" />
-              </Button>
+              <PdfExportButton
+                projectRoot={projectRoot}
+                getPdf={() => {
+                  if (visual.active) return visual.bytes.current;
+                  const data = getCurrentPdfBytes();
+                  return data ? getPdfArrayBuffer(data) : null;
+                }}
+              />
             </>
           )}
           <Popover>

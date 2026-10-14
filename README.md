@@ -51,6 +51,8 @@ Open an existing LaTeX project or create one from a template. Ask Codex to help 
 
 Use **Recompile** to build the PDF, or enable **Auto** for automatic recompilation. Existing PDFs load immediately when available. Toggle **Code** beside **Layout** to hide the LaTeX source while keeping the chat and PDF visible.
 
+Use **Export PDF** to choose the original PDF or an optimized ebook copy. Ebook export requires [Ghostscript](https://ghostscript.com/) (`gs`) and can reduce image detail for screen reading. The working PDF stays unchanged; if optimization does not reduce the size, the original is exported instead.
+
 ## Features
 
 - **Codex assistant** — chat alongside the document, attach project files, select models and reasoning effort, approve tool requests, and resume conversations.
