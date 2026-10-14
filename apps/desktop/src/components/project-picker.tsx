@@ -303,7 +303,7 @@ export function ProjectPicker() {
               <div className="flex shrink-0 items-center gap-1">
                 <Button variant="ghost" size="icon" className="size-6" asChild>
                   <a
-                    href="https://git.jolibrain.com/beniz/codex-prism"
+                    href="https://github.com/beniz/codex-prism"
                     target="_blank"
                     rel="noopener noreferrer"
                     title="GitHub"
