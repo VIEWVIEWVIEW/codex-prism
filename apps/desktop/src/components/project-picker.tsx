@@ -34,7 +34,8 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useTheme } from "next-themes";
-import { useProjectStore } from "@/stores/project-store";
+import { ProjectFolders, ProjectFolderSelect } from "./project-folders";
+import { useProjectStore, type RecentProject } from "@/stores/project-store";
 import { useDocumentStore } from "@/stores/document-store";
 import { useAgentSetupStore } from "@/stores/agent-setup-store";
 import { useUvSetupStore } from "@/stores/uv-setup-store";
@@ -64,12 +65,6 @@ interface DefaultProject {
 
 type ProjectPickerSection = "projects" | "settings";
 type SettingsDetailSection = "provider" | "environment";
-
-type RecentProject = {
-  path: string;
-  name: string;
-  lastOpened: number;
-};
 
 type ProjectPreviewData = {
   createdAt: number | null;
@@ -105,6 +100,13 @@ export function ProjectPicker() {
   const { theme = "system", setTheme } = useTheme();
   const searchShortcutLabel = "⌘ K";
 
+  const folders = useProjectStore((s) => s.folders);
+  const folderView = useProjectStore((s) => s.folderView);
+  const setFolderView = useProjectStore((s) => s.setFolderView);
+  const folderTitle =
+    folderView === "unfiled"
+      ? "Unfiled"
+      : folders.find((f) => f.id === folderView)?.name;
   const recentProjects = useProjectStore((s) => s.recentProjects);
   const addRecentProject = useProjectStore((s) => s.addRecentProject);
   const removeRecentProject = useProjectStore((s) => s.removeRecentProject);
@@ -196,7 +198,7 @@ export function ProjectPicker() {
       await openProject(path);
       addRecentProject(path);
     } catch (err) {
-      removeRecentProject(path);
+      toast.error("Could not open project", { description: String(err) });
       console.warn("Failed to open recent project:", { path, error: err });
     }
   };
@@ -208,13 +210,18 @@ export function ProjectPicker() {
 
   const normalizedSearch = searchQuery.trim().toLowerCase();
   const visibleProjects = useMemo(() => {
-    if (!normalizedSearch) return recentProjects;
-    return recentProjects.filter(
+    const inFolder = recentProjects.filter(
+      (p) =>
+        !folderView ||
+        (folderView === "unfiled" ? !p.folderId : p.folderId === folderView),
+    );
+    if (!normalizedSearch) return inFolder;
+    return inFolder.filter(
       (project) =>
         project.name.toLowerCase().includes(normalizedSearch) ||
         project.path.toLowerCase().includes(normalizedSearch),
     );
-  }, [normalizedSearch, recentProjects]);
+  }, [normalizedSearch, recentProjects, folderView]);
 
   if (wizardMode) {
     return (
@@ -267,18 +274,24 @@ export function ProjectPicker() {
 
         <nav
           className={cn(
-            "flex flex-col gap-1",
+            "flex min-h-0 flex-col gap-1 overflow-y-auto",
             isSidebarCollapsed ? "items-center px-0" : "px-2",
           )}
         >
           <ProjectNavButton
-            active={activeSection === "projects"}
+            active={activeSection === "projects" && !folderView}
             collapsed={isSidebarCollapsed}
             icon={FolderOpenIcon}
-            onClick={() => setActiveSection("projects")}
+            onClick={() => {
+              setActiveSection("projects");
+              setFolderView(null);
+            }}
           >
             All Projects
           </ProjectNavButton>
+          {!isSidebarCollapsed && (
+            <ProjectFolders onNavigate={() => setActiveSection("projects")} />
+          )}
           <ProjectNavButton
             active={activeSection === "settings"}
             collapsed={isSidebarCollapsed}
@@ -346,7 +359,9 @@ export function ProjectPicker() {
         <header className="flex h-[calc(48px+var(--titlebar-height))] shrink-0 flex-nowrap items-center gap-3 border-border/70 border-b bg-background px-5">
           <div className="mr-auto flex min-w-0 items-center">
             <h1 className="truncate font-semibold text-lg leading-none">
-              {activeSection === "settings" ? "Settings" : "All Projects"}
+              {activeSection === "settings"
+                ? "Settings"
+                : (folderTitle ?? "All Projects")}
             </h1>
           </div>
 
@@ -358,7 +373,11 @@ export function ProjectPicker() {
                   ref={searchInputRef}
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder="Search"
+                  placeholder={
+                    folderTitle
+                      ? `Search in ${folderTitle}`
+                      : "Search all projects"
+                  }
                   className="h-9 w-full rounded-lg border border-input bg-background pr-16 pl-9 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-ring"
                 />
                 <kbd className="pointer-events-none absolute top-1/2 right-2 flex h-6 min-w-10 -translate-y-1/2 items-center justify-center rounded-md border border-border/70 bg-muted/30 px-1.5 font-medium text-[11px] text-muted-foreground leading-none">
@@ -754,6 +773,25 @@ function ProjectPreviewCard({
   onOpen: () => void;
   onRemove: () => void;
 }) {
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    if (typeof IntersectionObserver === "undefined") {
+      setVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setVisible(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "200px" },
+    );
+    if (cardRef.current) observer.observe(cardRef.current);
+    return () => observer.disconnect();
+  }, []);
   const [preview, setPreview] = useState<ProjectPreviewState>(() => {
     const cached = projectPreviewCache.get(projectPreviewCacheKey(project));
     return cached ? { status: "ready", data: cached } : { status: "loading" };
@@ -764,6 +802,7 @@ function ProjectPreviewCard({
       : "";
 
   useEffect(() => {
+    if (!visible) return;
     let cancelled = false;
     const cacheKey = projectPreviewCacheKey(project);
     const cached = projectPreviewCache.get(cacheKey);
@@ -788,10 +827,10 @@ function ProjectPreviewCard({
     return () => {
       cancelled = true;
     };
-  }, [project]);
+  }, [project.path, project.lastOpened, visible]);
 
   return (
-    <div className="group min-w-0">
+    <div ref={cardRef} className="group min-w-0">
       <div className="relative">
         <button
           className="relative aspect-[3/4] w-full overflow-hidden rounded-lg border border-border/70 bg-background text-left transition-all duration-200 hover:border-foreground/20 hover:shadow-md"
@@ -818,6 +857,7 @@ function ProjectPreviewCard({
       <div className="mt-1 h-4 truncate text-left text-muted-foreground text-xs">
         {createdDateLabel}
       </div>
+      <ProjectFolderSelect project={project} />
     </div>
   );
 }

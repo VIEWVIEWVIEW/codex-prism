@@ -49,6 +49,8 @@ Python environments and external scientific skills are optional and can be confi
 
 Open an existing LaTeX project or create one from a template. Ask Codex to help draft or revise your document, and review edits with **Keep** or **Undo**. Sending another chat prompt implicitly keeps pending changes once the new turn starts successfully.
 
+In **All Projects**, use **New folder** in the sidebar to organize projects into virtual folders. The selector on each project card changes its folder without moving files on disk. Folder assignments are saved locally; removing a folder returns its projects to **Unfiled**. The project library has no ten-project limit.
+
 Use **Recompile** to build the PDF, or enable **Auto** for automatic recompilation. Existing PDFs load immediately when available. Toggle **Code** beside **Layout** to hide the LaTeX source while keeping the chat and PDF visible.
 
 Use **Export PDF** to choose the original PDF or an optimized ebook copy. Ebook export requires [Ghostscript](https://ghostscript.com/) (`gs`) and can reduce image detail for screen reading. The working PDF stays unchanged; if optimization does not reduce the size, the original is exported instead.

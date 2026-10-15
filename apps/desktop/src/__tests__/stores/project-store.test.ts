@@ -6,6 +6,8 @@ describe("useProjectStore", () => {
     // Reset the store between tests
     useProjectStore.setState({
       recentProjects: [],
+      folders: [],
+      folderView: null,
       lastProjectFolder: null,
     });
   });
@@ -42,13 +44,13 @@ describe("useProjectStore", () => {
       });
     });
 
-    it("limits to MAX_RECENT (10) entries", () => {
+    it("retains all projects beyond ten entries", () => {
       const store = useProjectStore.getState();
       for (let i = 0; i < 12; i++) {
         store.addRecentProject(`/project-${i}`);
       }
       const { recentProjects } = useProjectStore.getState();
-      expect(recentProjects).toHaveLength(10);
+      expect(recentProjects).toHaveLength(12);
       // Most recent should be first
       expect(recentProjects[0].path).toBe("/project-11");
     });
@@ -112,5 +114,80 @@ describe("useProjectStore", () => {
         name: "new",
       });
     });
+  });
+});
+
+describe("virtual project folders", () => {
+  beforeEach(() =>
+    useProjectStore.setState({
+      recentProjects: [],
+      folders: [],
+      folderView: null,
+    }),
+  );
+  it("preserves membership when reopening and renaming projects", () => {
+    const store = useProjectStore.getState();
+    const id = store.createFolder("Research");
+    store.setFolderView(id);
+    store.addRecentProject("/work/paper");
+    store.setFolderView(null);
+    store.addRecentProject("/work/paper");
+    expect(useProjectStore.getState().recentProjects[0].folderId).toBe(id);
+    store.renameRecentProject("/work/paper", "/work/revised");
+    expect(useProjectStore.getState().recentProjects[0].folderId).toBe(id);
+  });
+  it("moves projects without changing paths and unfiles them when a folder is removed", () => {
+    const store = useProjectStore.getState();
+    store.addRecentProject("/work/paper");
+    const id = store.createFolder("Research");
+    store.moveProject("/work/paper", id);
+    store.renameFolder(id, "Papers");
+    expect(useProjectStore.getState().recentProjects[0]).toMatchObject({
+      path: "/work/paper",
+      folderId: id,
+    });
+    store.setFolderView(id);
+    store.removeFolder(id);
+    expect(useProjectStore.getState().recentProjects[0]).toMatchObject({
+      path: "/work/paper",
+      folderId: null,
+    });
+    expect(useProjectStore.getState().folderView).toBe("unfiled");
+  });
+  it("rejects empty and duplicate folder names and invalid destinations", () => {
+    const store = useProjectStore.getState();
+    store.createFolder(" Research ");
+    expect(() => store.createFolder("research")).toThrow("already exists");
+    expect(() => store.createFolder("  ")).toThrow("Enter a folder name");
+    expect(() => store.moveProject("/work/paper", "missing")).toThrow(
+      "no longer exists",
+    );
+  });
+  it("persists folders and membership across hydration and accepts the old flat format", async () => {
+    const store = useProjectStore.getState();
+    const id = store.createFolder("Research");
+    store.addRecentProject("/work/paper");
+    store.moveProject("/work/paper", id);
+    const storage = useProjectStore.persist.getOptions().storage!;
+    const key = useProjectStore.persist.getOptions().name!;
+    const saved = await storage.getItem(key);
+    useProjectStore.setState({ folders: [], recentProjects: [] });
+    await storage.setItem(key, saved!);
+    await useProjectStore.persist.rehydrate();
+    expect(useProjectStore.getState().folders).toEqual([
+      { id, name: "Research" },
+    ]);
+    expect(useProjectStore.getState().recentProjects[0].folderId).toBe(id);
+    useProjectStore.setState({ folders: [], folderView: null });
+    await storage.setItem(key, {
+      state: {
+        recentProjects: [{ path: "/old", name: "old", lastOpened: 1 }],
+        lastProjectFolder: null,
+      } as any,
+      version: 0,
+    });
+    await useProjectStore.persist.rehydrate();
+    expect(useProjectStore.getState().recentProjects[0].path).toBe("/old");
+    expect(useProjectStore.getState().folders).toEqual([]);
   });
 });
