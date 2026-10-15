@@ -1,3 +1,4 @@
+import { listContinuation } from "@/lib/composer-lists";
 import { ChatHistory } from "./chat-history";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -527,6 +528,17 @@ export function AgentChatDrawer({
                 value={t.draft}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => {
+                  if (e.nativeEvent.isComposing) return;
+                  if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                    const field = e.currentTarget;
+                    const edit = listContinuation(field.value, field.selectionStart, field.selectionEnd);
+                    if (edit) {
+                      e.preventDefault();
+                      field.setRangeText(edit.text, edit.from, edit.to, "end");
+                      setDraft(field.value);
+                    }
+                    return;
+                  }
                   if (
                     e.key === "Enter" &&
                     !e.shiftKey &&
@@ -708,7 +720,7 @@ export function AgentChatDrawer({
                 )}
               </span>
               <span className="shrink-0">
-                Enter to send · Shift+Enter for newline
+                Enter to send · Shift+Enter for newline / next list item
               </span>
             </div>
           </div>
