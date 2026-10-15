@@ -54,8 +54,10 @@ function ProposalReview() {
           type="button"
           disabled={busy || running || p.state === "invalid"}
           onClick={() => decide("apply")}
+          title="Keep all changes from this chat"
+          className="rounded-full bg-green-600 px-3 py-1 font-medium text-white hover:bg-green-700 focus-visible:outline focus-visible:outline-ring disabled:opacity-50"
         >
-          Apply changes
+          {busy ? "…" : "Keep"}
         </button>
         <button
           type="button"
