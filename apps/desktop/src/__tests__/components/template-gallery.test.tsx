@@ -163,3 +163,52 @@ it.each([
   }
   expect(useTemplateStore.getState().previewTemplateId).toBeNull();
 });
+
+it("resizes the PDF after dialog layout and redraws when returning from details", async () => {
+  const { getMupdfClient } = await import("@/lib/mupdf/mupdf-client");
+  let resize = () => {};
+  const previousObserver = globalThis.ResizeObserver;
+  globalThis.ResizeObserver = class {
+    constructor(callback: () => void) { resize = callback; }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+  let height = 60;
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(700);
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(() => height);
+  const paint = vi.fn();
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ putImageData: paint } as any);
+  const drawPage = vi.fn(async (_docId: number, _page: number, _dpi: number) => ({ width: 600, height: 800 }) as ImageData);
+  vi.mocked(getMupdfClient).mockReturnValue({
+    openDocument: vi.fn(async () => 1),
+    closeDocument: vi.fn(async () => {}),
+    countPages: vi.fn(async () => 1),
+    getPageSize: vi.fn(async () => ({ width: 600, height: 800 })),
+    drawPage,
+  } as any);
+  vi.mocked(getTemplatePdfBuffer).mockResolvedValue(new ArrayBuffer(5));
+  const flushFrame = async () => {
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 40)); });
+  };
+  try {
+    useTemplateStore.getState().openPreview("paper-standard");
+    await act(async () => root.render(<TemplatePreview />));
+    await flushFrame();
+    const initialDpi = drawPage.mock.calls[0]?.[2];
+    height = 650;
+    act(() => resize());
+    await flushFrame();
+    expect(drawPage.mock.calls[drawPage.mock.calls.length - 1][2]).toBeGreaterThan(initialDpi!);
+    expect(parseFloat(document.querySelector("canvas")!.style.height)).toBe(602);
+    await act(async () => button("Use Template").click());
+    expect(document.querySelector("canvas")).toBeNull();
+    const before = paint.mock.calls.length;
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Back to preview"]')!.click());
+    await flushFrame();
+    expect(document.querySelector("canvas")).not.toBeNull();
+    expect(paint.mock.calls.length).toBeGreaterThan(before);
+  } finally {
+    globalThis.ResizeObserver = previousObserver;
+  }
+});

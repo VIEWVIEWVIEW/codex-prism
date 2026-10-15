@@ -224,9 +224,11 @@ export function TemplatePreview() {
     };
   }, [template, retryCount]);
 
-  // ── Render current page ──
+  // Render after layout and whenever the dialog's preview area changes size.
   useEffect(() => {
     if (
+      modalStep !== "preview" ||
+      loading ||
       docIdRef.current <= 0 ||
       numPages === 0 ||
       !canvasRef.current ||
@@ -237,47 +239,53 @@ export function TemplatePreview() {
     const pageIndex = currentPage - 1;
     const size = pageSizesRef.current[pageIndex];
     if (!size) return;
-
     setIsLandscape(size.width > size.height);
-
     const container = containerRef.current;
-    const maxW = container.clientWidth - 48;
-    const maxH = container.clientHeight - 48;
-    const pageAspect = size.width / size.height;
-
-    let displayW = maxW;
-    let displayH = displayW / pageAspect;
-    if (displayH > maxH) {
-      displayH = maxH;
-      displayW = displayH * pageAspect;
-    }
-
-    const dpr = window.devicePixelRatio || 1;
-    const dpi = (displayW / size.width) * 72 * dpr;
-
     const client = getMupdfClient();
+    const docId = docIdRef.current;
     const gen = loadGenRef.current;
     let cancelled = false;
-    client
-      .drawPage(docIdRef.current, pageIndex, dpi)
-      .then((imageData) => {
-        if (cancelled || gen !== loadGenRef.current) return;
+    let revision = 0;
+    let frame = 0;
+    const render = () => {
+      const current = ++revision;
+      const maxW = container.clientWidth - 48;
+      const maxH = container.clientHeight - 48;
+      if (maxW <= 0 || maxH <= 0) return;
+      const scale = Math.min(maxW / size.width, maxH / size.height);
+      const displayW = size.width * scale;
+      const displayH = size.height * scale;
+      const dpi = scale * 72 * (window.devicePixelRatio || 1);
+      void client.drawPage(docId, pageIndex, dpi).then((imageData) => {
+        if (cancelled || current !== revision || gen !== loadGenRef.current) return;
         const canvas = canvasRef.current;
         if (!canvas) return;
         canvas.width = imageData.width;
         canvas.height = imageData.height;
         canvas.style.width = `${displayW}px`;
         canvas.style.height = `${displayH}px`;
-        const ctx = canvas.getContext("2d")!;
-        ctx.putImageData(imageData, 0, 0);
-      })
-      .catch((err) => {
+        canvas.getContext("2d")!.putImageData(imageData, 0, 0);
+      }).catch((err) => {
+        if (cancelled || current !== revision || gen !== loadGenRef.current) return;
         log.warn("render error", { error: String(err) });
+        setPreviewError(String(err));
+        setError(true);
       });
+    };
+    const schedule = () => {
+      ++revision; // Discard a render measured before the latest resize.
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(render);
+    };
+    const observer = new ResizeObserver(schedule);
+    observer.observe(container);
+    schedule();
     return () => {
       cancelled = true;
+      observer.disconnect();
+      cancelAnimationFrame(frame);
     };
-  }, [currentPage, numPages, isLandscape]);
+  }, [currentPage, numPages, isLandscape, modalStep, loading]);
 
   // ── Page navigation ──
   const goToPrevPage = useCallback(
@@ -506,10 +514,10 @@ export function TemplatePreview() {
             </DialogHeader>
 
             <div className="flex flex-1 overflow-hidden">
-              <div className="relative flex flex-1 flex-col">
+              <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
                 <div
                   ref={containerRef}
-                  className="flex flex-1 items-center justify-center overflow-hidden bg-muted/30 p-6"
+                  className="flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden bg-muted/30 p-6"
                 >
                   {loading && (
                     <div className="flex flex-col items-center gap-2 text-muted-foreground">
@@ -588,6 +596,7 @@ export function TemplatePreview() {
                   variant="ghost"
                   size="icon"
                   className="size-7 shrink-0 rounded-lg"
+                  aria-label="Back to preview"
                   onClick={() => setModalStep("preview")}
                 >
                   <ArrowLeftIcon className="size-4" />
