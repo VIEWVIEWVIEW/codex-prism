@@ -55,9 +55,10 @@ pub async fn codex_send(
     images: Option<Vec<String>>,
     main_document: Option<String>,
     history_prompt: Option<String>,
+    chat_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     backend
-        .codex_send_with_history_prompt(
+        .codex_send_for_chat(
             project_id,
             thread_id,
             prompt,
@@ -66,6 +67,7 @@ pub async fn codex_send(
             images,
             main_document,
             history_prompt,
+            chat_id,
         )
         .await
 }

@@ -29,9 +29,7 @@ fn encode(review: &Review, dir: &Path) -> Result<StoredReview, String> {
                 let hash = projects::revision(bytes);
                 let dest = dir.join(&hash);
                 if !dest.exists() {
-                    let temp = dir.join(format!("{}.tmp", uuid::Uuid::new_v4()));
-                    fs::write(&temp, bytes).map_err(|e| e.to_string())?;
-                    fs::rename(temp, dest).map_err(|e| e.to_string())?;
+                    projects::atomic_bytes(&dest, bytes)?;
                 }
                 Ok((name.clone(), hash))
             })

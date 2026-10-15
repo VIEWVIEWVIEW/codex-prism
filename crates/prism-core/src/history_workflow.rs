@@ -634,11 +634,46 @@ pub(crate) fn checkpoint(
 pub(crate) fn accept(
     root: &str,
     id: &str,
-    mut patch: Patch,
+    patch: Patch,
     prompts: &[String],
 ) -> Result<Option<SnapshotInfo>, String> {
     let lock = mutex(root);
     let _guard = lock.lock().map_err(|e| e.to_string())?;
+    accept_locked(root, id, patch, prompts)
+}
+pub(crate) fn recorded(root: &str, id: &str) -> Result<bool, String> {
+    Ok(state(root)?.completed.iter().any(|done| done == id))
+}
+pub(crate) fn target(root: &str) -> Result<String, String> {
+    let repo = open_repo(root)?;
+    Ok(format!(
+        "{}:{:?}",
+        branch(&repo)?,
+        head(&repo).map(|c| c.id())
+    ))
+}
+pub(crate) fn accept_transaction(
+    root: &str,
+    expected: &str,
+    id: &str,
+    patch: Patch,
+    prompts: &[String],
+    write: impl FnOnce() -> Result<(), String>,
+) -> Result<Result<Option<SnapshotInfo>, String>, String> {
+    let lock = mutex(root);
+    let _guard = lock.lock().map_err(|e| e.to_string())?;
+    if target(root)? != expected {
+        return Err("Git target changed during merge; retry".into());
+    }
+    write()?;
+    Ok(accept_locked(root, id, patch, prompts))
+}
+fn accept_locked(
+    root: &str,
+    id: &str,
+    mut patch: Patch,
+    prompts: &[String],
+) -> Result<Option<SnapshotInfo>, String> {
     let repo = open_repo(root)?;
     let tracked = tree_files(
         &repo,

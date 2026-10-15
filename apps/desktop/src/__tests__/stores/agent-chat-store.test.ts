@@ -2,9 +2,10 @@ import { beforeEach, describe, it, expect, vi } from "vitest";
 import { useAgentChatStore } from "@/stores/agent-chat-store";
 import { useDocumentStore } from "@/stores/document-store";
 import { useSettingsStore } from "@/stores/settings-store";
-import { backend } from "@/lib/backend";
+import { backend, proposals } from "@/lib/backend";
 import { compileLatex, resolveCompileTarget } from "@/lib/latex-compiler";
 vi.mock("@/lib/backend", () => ({
+  proposals: { list: vi.fn(async () => []), operate: vi.fn() },
   backend: {
     projects: { register: vi.fn(async () => ({ id: "p1", root: "/paper" })) },
     agent: {
@@ -65,6 +66,8 @@ beforeEach(() => {
     projectId: "p1",
     activeProjectPath: "/paper",
     locked: false,
+    proposals: [],
+    viewMain: false,
     review: { active: false, changes: [] },
     isStreaming: false,
     error: null,
@@ -217,31 +220,34 @@ describe("Codex turn lifecycle", () => {
       [],
       undefined,
       "Fix equations",
+      "tab1",
     );
     expect(save.mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(backend.agent.send).mock.invocationCallOrder[0],
     );
     expect(useAgentChatStore.getState().locked).toBe(true);
   });
-  it("sends through pending review without accepting files one at a time", async () => {
-    const review = {
-      active: false,
-      changes: [
-        {
-          path: "main.tex",
-          kind: "modified" as const,
-          binary: false,
-          oldContent: "before",
-          newContent: "after",
-        },
-      ],
-    };
-    useAgentChatStore.setState({ locked: true, review });
-    vi.mocked(backend.review.get).mockResolvedValueOnce(review);
-    await useAgentChatStore.getState().sendPrompt("refine this");
-    expect(backend.agent.send).toHaveBeenCalledOnce();
-    expect(backend.review.resolve).not.toHaveBeenCalled();
+  it("blocks legacy reviews without accepting files implicitly", async () => {
+    useAgentChatStore.setState({
+      locked: true,
+      review: {
+        active: false,
+        changes: [
+          {
+            path: "main.tex",
+            kind: "modified",
+            oldContent: "old",
+            newContent: "new",
+            binary: false,
+          },
+        ],
+      },
+    });
+    await useAgentChatStore.getState().sendPrompt("Refine");
+    expect(backend.agent.send).not.toHaveBeenCalled();
+    expect(useAgentChatStore.getState().error).toContain("legacy");
   });
+
   it("blocks a new turn when the project has an active turn", async () => {
     useAgentChatStore.setState({
       locked: true,
@@ -264,12 +270,6 @@ describe("Codex turn lifecycle", () => {
       ],
     };
     useAgentChatStore.setState({ locked: true, review });
-    vi.mocked(backend.review.get)
-      .mockResolvedValueOnce(review)
-      .mockResolvedValueOnce(review);
-    vi.mocked(backend.agent.send).mockRejectedValueOnce(
-      new Error("Model unavailable"),
-    );
     await useAgentChatStore.getState().sendPrompt("refine");
     expect(useAgentChatStore.getState().review).toEqual(review);
     expect(useAgentChatStore.getState().locked).toBe(true);
@@ -498,4 +498,74 @@ it("discards buffered text when switching projects", () => {
   } finally {
     vi.useRealTimers();
   }
+});
+
+describe("concurrent proposals", () => {
+  it("routes session binding only to the submitting tab", () => {
+    const first = useAgentChatStore.getState().tabs[0];
+    useAgentChatStore.setState({
+      tabs: [
+        { ...first, isStreaming: true },
+        { ...first, id: "tab2", isStreaming: true },
+      ],
+    });
+    useAgentChatStore.getState().handleEvent({
+      method: "prism/session",
+      params: { projectId: "p1", chatId: "tab2", threadId: "thread2" },
+    });
+    expect(useAgentChatStore.getState().tabs.map((t) => t.sessionId)).toEqual([
+      null,
+      "thread2",
+    ]);
+  });
+  it("allows a second chat while another chat is running", async () => {
+    const first = useAgentChatStore.getState().tabs[0];
+    useAgentChatStore.setState({
+      tabs: [
+        { ...first, isStreaming: true, sessionId: "other" },
+        { ...first, id: "tab2" },
+      ],
+      activeTabId: "tab2",
+      locked: true,
+    });
+    await useAgentChatStore.getState().sendPrompt("Independent edit");
+    expect(backend.agent.send).toHaveBeenCalledOnce();
+    expect(useAgentChatStore.getState().tabs[0].isStreaming).toBe(true);
+    expect(vi.mocked(backend.agent.send).mock.calls[0][8]).toBe("tab2");
+  });
+  it("retains pending work when its tab is closed", () => {
+    const p = {
+      id: "proposal",
+      projectId: "p1",
+      threadId: "thread1",
+      generation: 2,
+      state: "ready" as const,
+      conflicts: [],
+      parent: null,
+      changes: [],
+    };
+    useAgentChatStore.setState({
+      proposals: [p],
+      tabs: [{ ...useAgentChatStore.getState().tabs[0], sessionId: "thread1" }],
+    });
+    useAgentChatStore.getState().closeTab("tab1");
+    expect(useAgentChatStore.getState().proposals).toEqual([p]);
+  });
+  it("keeps other chat errors out of the active chat", () => {
+    const first = useAgentChatStore.getState().tabs[0];
+    useAgentChatStore.setState({
+      tabs: [
+        { ...first, sessionId: "a" },
+        { ...first, id: "tab2", sessionId: "b" },
+      ],
+      activeTabId: "tab2",
+      error: null,
+    });
+    useAgentChatStore.getState().handleEvent({
+      method: "turn/completed",
+      params: { threadId: "a", turn: { error: { message: "a failed" } } },
+    });
+    expect(useAgentChatStore.getState().error).toBeNull();
+    expect(useAgentChatStore.getState().tabs[0].error).toBe("a failed");
+  });
 });

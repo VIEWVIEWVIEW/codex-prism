@@ -23,7 +23,8 @@ const { state } = vi.hoisted(() => ({
   },
 }));
 vi.mock("@/stores/agent-chat-store", () => ({
-  useAgentChatStore: (select: any) => select(state),
+  activeProposal: () => undefined,
+  useAgentChatStore: (select: any = (s: any) => s) => select(state),
 }));
 vi.mock("@/lib/review-diff-client", () => ({
   loadReviewDiff: vi.fn(async (before: string, after: string) =>

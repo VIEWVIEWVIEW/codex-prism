@@ -198,6 +198,7 @@ async fn build(app: &Backend, project: &str, key: &str) -> Result<(), String> {
     );
     Ok(())
 }
+#[cfg(test)]
 pub(crate) async fn prepare(app: &Backend, id: &str, main: &str) {
     let prepare = || -> Result<(String, String), String> {
         let _guard = app.inner.projects.0.lock().map_err(|e| e.to_string())?;
@@ -718,4 +719,23 @@ mod tests {
         assert_eq!(r.visual.unwrap().state, "unavailable");
         assert_eq!(fs::read(root.join("main.pdf")).unwrap(), b"%PDF-old output");
     }
+}
+
+/// Proposal artifacts are addressed by immutable inputs and owned by a workspace.
+/// They never consult or overwrite the legacy project review.
+pub(crate) async fn proposal_pdf(
+    app: &Backend,
+    workspace: &str,
+    main: &str,
+    files: &BTreeMap<String, Vec<u8>>,
+) -> Result<Value, String> {
+    let key = capture(app, workspace, main, files)?;
+    build(app, workspace, &key).await?;
+    let dir = artifact(app, workspace, &key)?;
+    let locations: Vec<latex::SourceBox> =
+        serde_json::from_slice(&fs::read(dir.join("locations.json")).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    Ok(
+        json!({"artifactId":key,"bytes":fs::read(dir.join("output.pdf")).map_err(|e|e.to_string())?,"locations":locations}),
+    )
 }

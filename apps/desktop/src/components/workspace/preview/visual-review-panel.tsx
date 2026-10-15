@@ -3,7 +3,7 @@ import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
 import type { Region, VisualItem } from "@/lib/visual-review";
 import { useAgentChatStore } from "@/stores/agent-chat-store";
 import { FileReview } from "@/components/agent-chat/proposed-changes-panel";
-function Crop({ doc, region }: { doc: number; region: Region }) {
+export function Crop({ doc, region }: { doc: number; region: Region }) {
   const [url, setUrl] = useState<string>();
   const [error, setError] = useState(false);
   useEffect(() => {

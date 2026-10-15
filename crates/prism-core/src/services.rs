@@ -7,13 +7,45 @@ pub(crate) async fn project_service(
     operation: String,
     args: Value,
 ) -> Result<Value, String> {
+    if operation == "proposal_compile" {
+        return crate::proposals::compile(app, project_id, args).await;
+    }
+    if operation.starts_with("proposal_") {
+        let worker = app.clone();
+        return tokio::task::spawn_blocking(move || {
+            crate::proposals::service(&worker, &project_id, &operation, args)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    }
     if operation == "optimize_pdf" {
         projects::get(&app, &project_id)?;
-        let encoded = args["pdfBase64"].as_str().ok_or("Missing PDF data")?.to_owned();
+        let encoded = args["pdfBase64"]
+            .as_str()
+            .ok_or("Missing PDF data")?
+            .to_owned();
         return crate::pdf_export::optimize(&app, encoded).await;
     }
     if operation.starts_with("visual_") {
         return crate::visual_review::service(&app, &project_id, &operation, args).await;
+    }
+    if operation == "compile_latex" || operation == "load_existing_pdf" {
+        let project = projects::get(&app, &project_id)?;
+        let main = args["mainFile"]
+            .as_str()
+            .ok_or("Missing mainFile")?
+            .to_owned();
+        projects::resolve(&project.root, &main)?;
+        let root = project.root.to_string_lossy().to_string();
+        return if operation == "compile_latex" {
+            Ok(json!(
+                latex::compile_latex(&app.inner.latex, root, main).await?
+            ))
+        } else {
+            Ok(json!(
+                latex::load_existing_pdf(&app.inner.latex, root, main).await?
+            ))
+        };
     }
     let state = &app.inner.codex;
     let _services = state.service_lock.lock().await;
@@ -168,14 +200,19 @@ pub(crate) async fn project_service(
             let file = str_arg("filePath")?;
             projects::resolve(&project.root, &main)?;
             projects::resolve(&project.root, &file)?;
-            let line = args["line"].as_u64().and_then(|v| u32::try_from(v).ok())
-                .filter(|v| *v > 0).ok_or("Invalid source line")?;
+            let line = args["line"]
+                .as_u64()
+                .and_then(|v| u32::try_from(v).ok())
+                .filter(|v| *v > 0)
+                .ok_or("Invalid source line")?;
             let source_line = str_arg("sourceLine")?;
             let revision = str_arg("pdfRevision")?;
             tokio::task::spawn_blocking(move || {
                 latex::synctex_view(&root, &main, &file, line, &source_line, &revision)
                     .map(|location| json!(location))
-            }).await.map_err(|e| e.to_string())?
+            })
+            .await
+            .map_err(|e| e.to_string())?
         }
         "synctex_edit" => {
             let state = &app.inner.latex;

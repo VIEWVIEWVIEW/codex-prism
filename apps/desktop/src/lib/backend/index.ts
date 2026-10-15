@@ -80,6 +80,27 @@ export interface Review {
   active: boolean;
   changes: ReviewChange[];
 }
+export interface Proposal {
+  id: string;
+  projectId: string;
+  threadId: string | null;
+  chatId?: string | null;
+  turnId?: string | null;
+  error?: string | null;
+  generation: number;
+  state:
+    | "running"
+    | "ready"
+    | "conflicts"
+    | "repairing"
+    | "interrupted"
+    | "original"
+    | "applying"
+    | "invalid";
+  conflicts: string[];
+  parent: string | null;
+  changes: ReviewChange[];
+}
 export interface Session {
   id: string;
   projectId: string;
@@ -159,6 +180,7 @@ export interface PrismBackend {
       images?: string[],
       mainDocument?: string,
       historyPrompt?: string,
+      chatId?: string,
     ): Promise<any>;
     control(
       projectId: string,
@@ -221,6 +243,7 @@ export const backend: PrismBackend = {
       images,
       mainDocument,
       historyPrompt,
+      chatId,
     ) =>
       invoke("codex_send", {
         projectId,
@@ -231,6 +254,7 @@ export const backend: PrismBackend = {
         images: images ?? [],
         mainDocument: mainDocument ?? null,
         historyPrompt: historyPrompt ?? null,
+        chatId: chatId ?? null,
       }),
     control: (projectId, threadId, turnId, prompt) =>
       invoke("codex_control", {
@@ -269,3 +293,24 @@ export const backend: PrismBackend = {
 export { listen };
 export { convertFileSrc } from "@tauri-apps/api/core";
 export type { UnlistenFn } from "@tauri-apps/api/event";
+
+export const proposals = {
+  list: (projectId: string) =>
+    nativeInvoke<Proposal[]>("project_service", {
+      projectId,
+      operation: "proposal_list",
+      args: {},
+    }),
+  operate: <
+    T = { conflicts?: string[]; historyWarning?: string; prompt?: string },
+  >(
+    p: Proposal,
+    action: "apply" | "discard" | "repair" | "read" | "compile" | "recover",
+    extra: Record<string, unknown> = {},
+  ) =>
+    nativeInvoke<T>("project_service", {
+      projectId: p.projectId,
+      operation: `proposal_${action}`,
+      args: { proposalId: p.id, generation: p.generation, ...extra },
+    }),
+};

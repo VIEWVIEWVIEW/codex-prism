@@ -22,12 +22,30 @@ pub(crate) fn data_dir(app: &crate::Backend) -> Result<PathBuf, String> {
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
 }
-pub(crate) fn save_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
-    let bytes = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
+pub(crate) fn atomic_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
     let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-    fs::write(&temp, bytes).map_err(|e| e.to_string())?;
-    fs::rename(&temp, path).map_err(|e| e.to_string())
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temp)
+        .map_err(|e| e.to_string())?;
+    file.write_all(bytes).map_err(|e| e.to_string())?;
+    file.sync_all().map_err(|e| e.to_string())?;
+    fs::rename(&temp, path).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    fs::File::open(path.parent().ok_or("Missing parent")?)
+        .and_then(|d| d.sync_all())
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
+pub(crate) fn save_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
+    atomic_bytes(
+        path,
+        &serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?,
+    )
+}
+
 fn registry(app: &crate::Backend) -> Result<Vec<Project>, String> {
     let p = data_dir(app)?.join("projects.json");
     if !p.exists() {
@@ -185,24 +203,65 @@ fn write_checked(
 }
 // Review captures source and assets, never build/environment/internal directories.
 pub(crate) fn snapshot(root: &Path) -> Result<BTreeMap<String, Vec<u8>>, String> {
-    fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<String, Vec<u8>>) -> Result<(), String> {
+    snapshot_with_policy(root, false)
+}
+pub(crate) fn isolated_snapshot(root: &Path) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    snapshot_with_policy(root, true)
+}
+fn snapshot_with_policy(root: &Path, strict: bool) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    fn walk(
+        root: &Path,
+        dir: &Path,
+        strict: bool,
+        out: &mut BTreeMap<String, Vec<u8>>,
+    ) -> Result<(), String> {
         for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
             let ft = entry.file_type().map_err(|e| e.to_string())?;
+            if strict
+                && (name == ".git"
+                    || name == ".codexprism"
+                    || name == ".claudeprism"
+                    || name == ".prism"
+                    || name == ".venv"
+                    || name == ".env"
+                    || name.starts_with(".env."))
+            {
+                continue;
+            }
             if ft.is_symlink() {
+                if strict {
+                    return Err(format!("Cannot isolate symbolic link: {}", path.display()));
+                }
                 continue;
             }
             if ft.is_dir() {
-                if name.starts_with('.')
+                if (name.starts_with('.') && !strict)
                     || ["node_modules", "venv", "env", "__pycache__", "target"]
                         .contains(&name.as_str())
                 {
                     continue;
                 }
-                walk(root, &path, out)?;
+                walk(root, &path, strict, out)?;
             } else if ft.is_file() {
+                if strict {
+                    let rel = path
+                        .strip_prefix(root)
+                        .map_err(|e| e.to_string())?
+                        .to_str()
+                        .ok_or("Non-UTF-8 workspace path")?;
+                    resolve(root, rel)?;
+                    if name.ends_with(".synctex.gz") || name.ends_with(".run.xml") {
+                        continue;
+                    }
+                    if path.extension().and_then(|e| e.to_str()) == Some("pdf")
+                        && path.with_extension("tex").exists()
+                    {
+                        continue;
+                    }
+                }
                 let ext = path.extension().and_then(|x| x.to_str()).unwrap_or("");
                 if [
                     "aux",
@@ -229,12 +288,14 @@ pub(crate) fn snapshot(root: &Path) -> Result<BTreeMap<String, Vec<u8>>, String>
                     .to_string_lossy()
                     .replace('\\', "/");
                 out.insert(rel, fs::read(path).map_err(|e| e.to_string())?);
+            } else if strict {
+                return Err(format!("Unsupported workspace input: {}", path.display()));
             }
         }
         Ok(())
     }
     let mut out = BTreeMap::new();
-    walk(root, root, &mut out)?;
+    walk(root, root, strict, &mut out)?;
     Ok(out)
 }
 #[cfg(test)]
