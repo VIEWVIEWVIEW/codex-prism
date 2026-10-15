@@ -87,7 +87,7 @@ function Harness() {
           {p && <ProposalSource key={`${p.id}:${p.generation}`} proposal={p} />}
         </div>
         <div className="w-1/2">
-          {p && <ProposalPdf key={`${p.id}:${p.generation}`} proposal={p} />}
+          {p && <ProposalPdf key={p.id} proposal={p} />}
         </div>
       </div>
       <ProposedChangesPanel />

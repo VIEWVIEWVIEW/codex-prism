@@ -12,7 +12,12 @@ import { useEffect, useState } from "react";
 import { activeProposal, useAgentChatStore } from "@/stores/agent-chat-store";
 import { proposals, type Proposal } from "@/lib/backend";
 import { PdfViewer } from "./preview/pdf-viewer";
-import { useDocumentStore } from "@/stores/document-store";
+import {
+  useDocumentStore,
+  getCurrentPdfBytes,
+  getCurrentPdfRootId,
+} from "@/stores/document-store";
+import { getPdfArrayBuffer } from "@/lib/mupdf/pdf-data";
 
 export function ProposalSource({ proposal }: { proposal: Proposal }) {
   const side = useAgentChatStore((s) => s.proposalSide);
@@ -108,29 +113,63 @@ export function ProposalPdf({ proposal }: { proposal: Proposal }) {
   const [main, setMain] = useState(defaultMain);
   const side = useAgentChatStore((s) => s.proposalSide);
   const setSide = useAgentChatStore((s) => s.setProposalSide);
-  const [pdf, setPdf] = useState<ArrayBuffer | null>(null);
+  const [display, setDisplay] = useState<{
+    proposalId: string;
+    generation: number;
+    main: string;
+    side: string;
+    pdf: ArrayBuffer;
+    build: ProposalBuild;
+  } | null>(null);
+  const documentProject = useDocumentStore((s) => s.projectId);
+  const documentFiles = useDocumentStore((s) => s.files);
+  useDocumentStore((s) => s.pdfRevision);
+  const matching =
+    display?.proposalId === proposal.id &&
+    display.main === main &&
+    display.side === side
+      ? display
+      : null;
+  const build = matching?.build ?? null;
+  const currentBuild = matching?.generation === proposal.generation;
+  const mainBytes =
+    documentProject === proposal.projectId &&
+    documentFiles.find((f) => f.id === getCurrentPdfRootId())?.relativePath ===
+      main
+      ? getCurrentPdfBytes()
+      : null;
+  const pdf =
+    matching?.pdf ?? (mainBytes ? getPdfArrayBuffer(mainBytes) : null);
+  const [compiling, setCompiling] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [scale, setScale] = useState(1);
-  const [build, setBuild] = useState<ProposalBuild | null>(null);
   const reports = useSettingsStore((s) => s.visualChangeReports);
   const setReports = useSettingsStore((s) => s.setVisualChangeReports);
   useEffect(() => {
     let current = true;
-    setPdf(null);
-    setBuild(null);
+    setCompiling(true);
     setError(null);
-    if (["running", "repairing"].includes(proposal.state)) return;
     proposals
       .operate<ProposalBuild>(proposal, "compile", { mainFile: main, side })
       .then((result) => {
         if (current) {
-          setPdf(new Uint8Array(result.bytes).buffer);
-          setBuild(result);
+          setDisplay({
+            proposalId: proposal.id,
+            generation: proposal.generation,
+            main,
+            side,
+            pdf: new Uint8Array(result.bytes).buffer,
+            build: result,
+          });
+          setCompiling(false);
         }
       })
       .catch((e) => {
-        if (current) setError(String(e));
+        if (current) {
+          setError(String(e));
+          setCompiling(false);
+        }
       });
     return () => {
       current = false;
@@ -181,21 +220,40 @@ export function ProposalPdf({ proposal }: { proposal: Proposal }) {
           Fix with agent
         </button>
       )}
-      {error ? (
+      {pdf &&
+        (!matching ||
+          !currentBuild ||
+          compiling ||
+          ["running", "repairing"].includes(proposal.state)) && (
+          <p role="status" className="px-2 py-1 text-xs text-muted-foreground">
+            {!matching
+              ? "Main document PDF · preparing proposal preview"
+              : !currentBuild
+                ? "Showing the last successful proposal PDF while the preview updates"
+                : "Latest captured PDF · agent edits appear after the turn finishes"}
+          </p>
+        )}
+      {error && (
         <pre
           role="alert"
           className="overflow-auto whitespace-pre-wrap p-3 text-xs"
         >
           {error}
         </pre>
-      ) : pdf ? (
+      )}
+      {pdf ? (
         <PdfViewer
-          key={`${proposal.id}:${proposal.generation}:${side}`}
+          key={
+            matching ? build?.artifactId : `main:${proposal.projectId}:${main}`
+          }
           data={pdf}
-          artifactId={`${proposal.id}:${proposal.generation}:${side}`}
+          artifactId={
+            matching ? build?.artifactId : `main:${proposal.projectId}:${main}`
+          }
           scale={scale}
           onScaleChange={setScale}
           onSynctexClick={(page, x, y) => {
+            if (!currentBuild) return;
             const boxes = build?.locations.filter((b) => b.page === page) ?? [];
             boxes.sort(
               (a, b) =>
@@ -219,12 +277,12 @@ export function ProposalPdf({ proposal }: { proposal: Proposal }) {
         />
       ) : (
         <p className="p-4 text-sm">
-          {["running", "repairing"].includes(proposal.state)
-            ? "Agent is editing this proposal. Preview available when the turn finishes."
+          {error
+            ? "No successfully compiled PDF is available yet."
             : "Compiling proposal…"}
         </p>
       )}
-      {reports && build && side === "result" && (
+      {reports && build && currentBuild && side === "result" && (
         <ProposalReport proposal={proposal} main={main} result={build} />
       )}
     </section>

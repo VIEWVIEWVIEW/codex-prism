@@ -261,10 +261,7 @@ export function WorkspaceLayout() {
             className="min-w-0"
           >
             {proposal ? (
-              <ProposalPdf
-                key={`${proposal.id}:${proposal.generation}`}
-                proposal={proposal}
-              />
+              <ProposalPdf key={proposal.id} proposal={proposal} />
             ) : (
               <PdfPreview />
             )}
