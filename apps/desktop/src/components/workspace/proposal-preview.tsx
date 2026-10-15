@@ -1,304 +1,17 @@
-import { useSettingsStore } from "@/stores/settings-store";
 import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
 import { loadReviewBlocks } from "@/lib/review-diff-client";
 import { Crop } from "./preview/visual-review-panel";
 import type { SourceBox, Region } from "@/lib/visual-review";
-interface ProposalBuild {
-  bytes: number[];
-  artifactId: string;
-  locations: SourceBox[];
-}
+import type { ChatPdfBuild as ProposalBuild } from "@/hooks/use-chat-pdf";
 import { useEffect, useState } from "react";
-import { activeProposal, useAgentChatStore } from "@/stores/agent-chat-store";
+import { useAgentChatStore } from "@/stores/agent-chat-store";
 import { proposals, type Proposal } from "@/lib/backend";
-import { PdfViewer } from "./preview/pdf-viewer";
-import {
-  useDocumentStore,
-  getCurrentPdfBytes,
-  getCurrentPdfRootId,
-} from "@/stores/document-store";
-import { getPdfArrayBuffer } from "@/lib/mupdf/pdf-data";
 
-export function ProposalSource({ proposal }: { proposal: Proposal }) {
-  const side = useAgentChatStore((s) => s.proposalSide);
-  const [files, setFiles] = useState<string[]>([]);
-  const [path, setPath] = useState(proposal.changes[0]?.path ?? "main.tex");
-  const [text, setText] = useState("");
-  const [line, setLine] = useState<number | null>(null);
-  useEffect(() => {
-    const jump = (event: Event) => {
-      const d = (event as CustomEvent).detail;
-      if (
-        d.proposalId === proposal.id &&
-        d.generation === proposal.generation
-      ) {
-        setPath(d.path);
-        setLine(d.line);
-      }
-    };
-    window.addEventListener("proposal-source", jump);
-    return () => window.removeEventListener("proposal-source", jump);
-  }, [proposal.id, proposal.generation]);
-  useEffect(() => {
-    if (line)
-      document
-        .getElementById(`proposal-line-${proposal.id}-${line}`)
-        ?.scrollIntoView({ block: "center" });
-  }, [text, line, proposal.id]);
-  useEffect(() => {
-    let current = true;
-    setText("");
-    proposals
-      .operate<{ files: string[]; bytes: number[] | null }>(proposal, "read", {
-        path,
-        side,
-      })
-      .then((result) => {
-        if (!current) return;
-        setFiles(result.files);
-        const bytes = result.bytes;
-        setText(
-          bytes
-            ? bytes.includes(0)
-              ? "Binary asset"
-              : new TextDecoder().decode(new Uint8Array(bytes))
-            : "File absent from this snapshot",
-        );
-      })
-      .catch((e) => {
-        if (current) setText(String(e));
-      });
-    return () => {
-      current = false;
-    };
-  }, [proposal.id, proposal.generation, path, side]);
-  return (
-    <section
-      className="flex h-full min-h-0 flex-col"
-      aria-label="Proposal source"
-    >
-      <select
-        aria-label="Proposal file"
-        value={path}
-        onChange={(e) => setPath(e.target.value)}
-        className="border-b bg-background p-2 text-sm"
-      >
-        {Array.from(new Set([path, ...files])).map((f) => (
-          <option key={f}>{f}</option>
-        ))}
-      </select>
-      <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap p-3 text-xs">
-        {text.split("\n").map((text, i) => (
-          <div
-            id={`proposal-line-${proposal.id}-${i + 1}`}
-            key={i}
-            className={line === i + 1 ? "bg-yellow-100 text-black" : ""}
-          >
-            {text || " "}
-          </div>
-        ))}
-      </pre>
-    </section>
-  );
-}
-
-export function ProposalPdf({ proposal }: { proposal: Proposal }) {
-  const defaultMain = useDocumentStore(
-    (s) =>
-      s.files.find((f) => f.id === s.activeFileId && f.type === "tex")
-        ?.relativePath ??
-      s.files.find((f) => f.type === "tex")?.relativePath ??
-      "main.tex",
-  );
-  const [main, setMain] = useState(defaultMain);
-  const side = useAgentChatStore((s) => s.proposalSide);
-  const setSide = useAgentChatStore((s) => s.setProposalSide);
-  const [display, setDisplay] = useState<{
-    proposalId: string;
-    generation: number;
-    main: string;
-    side: string;
-    pdf: ArrayBuffer;
-    build: ProposalBuild;
-  } | null>(null);
-  const documentProject = useDocumentStore((s) => s.projectId);
-  const documentFiles = useDocumentStore((s) => s.files);
-  useDocumentStore((s) => s.pdfRevision);
-  const matching =
-    display?.proposalId === proposal.id &&
-    display.main === main &&
-    display.side === side
-      ? display
-      : null;
-  const build = matching?.build ?? null;
-  const currentBuild = matching?.generation === proposal.generation;
-  const mainBytes =
-    documentProject === proposal.projectId &&
-    documentFiles.find((f) => f.id === getCurrentPdfRootId())?.relativePath ===
-      main
-      ? getCurrentPdfBytes()
-      : null;
-  const pdf =
-    matching?.pdf ?? (mainBytes ? getPdfArrayBuffer(mainBytes) : null);
-  const [compiling, setCompiling] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [attempt, setAttempt] = useState(0);
-  const [scale, setScale] = useState(1);
-  const reports = useSettingsStore((s) => s.visualChangeReports);
-  const setReports = useSettingsStore((s) => s.setVisualChangeReports);
-  useEffect(() => {
-    let current = true;
-    setCompiling(true);
-    setError(null);
-    proposals
-      .operate<ProposalBuild>(proposal, "compile", { mainFile: main, side })
-      .then((result) => {
-        if (current) {
-          setDisplay({
-            proposalId: proposal.id,
-            generation: proposal.generation,
-            main,
-            side,
-            pdf: new Uint8Array(result.bytes).buffer,
-            build: result,
-          });
-          setCompiling(false);
-        }
-      })
-      .catch((e) => {
-        if (current) {
-          setError(String(e));
-          setCompiling(false);
-        }
-      });
-    return () => {
-      current = false;
-    };
-  }, [proposal.id, proposal.generation, proposal.state, main, side, attempt]);
-  return (
-    <section className="flex h-full min-h-0 flex-col" aria-label="Proposal PDF">
-      <div className="flex flex-wrap gap-2 border-b p-2 text-xs">
-        <input
-          aria-label="Proposal main document"
-          value={main}
-          onChange={(e) => setMain(e.target.value)}
-          className="w-40 bg-background"
-        />
-        <select
-          aria-label="Proposal comparison"
-          value={side}
-          onChange={(e) => setSide(e.target.value as "base" | "result")}
-          className="bg-background"
-        >
-          <option value="result">Proposal result</option>
-          <option value="base">Original base</option>
-        </select>
-        <button type="button" onClick={() => setAttempt((n) => n + 1)}>
-          Recompile
-        </button>
-        <label>
-          <input
-            type="checkbox"
-            checked={reports}
-            onChange={(e) => setReports(e.target.checked)}
-          />{" "}
-          Visual report
-        </label>
-      </div>
-      {error && (
-        <button
-          type="button"
-          className="p-2 text-xs underline"
-          onClick={() =>
-            void useAgentChatStore
-              .getState()
-              .sendPrompt(
-                `Fix compilation of ${main} in this proposal. Compiler diagnostics:\n${error}`,
-              )
-          }
-        >
-          Fix with agent
-        </button>
-      )}
-      {pdf &&
-        (!matching ||
-          !currentBuild ||
-          compiling ||
-          ["running", "repairing"].includes(proposal.state)) && (
-          <p role="status" className="px-2 py-1 text-xs text-muted-foreground">
-            {!matching
-              ? "Main document PDF · preparing proposal preview"
-              : !currentBuild
-                ? "Showing the last successful proposal PDF while the preview updates"
-                : "Latest captured PDF · agent edits appear after the turn finishes"}
-          </p>
-        )}
-      {error && (
-        <pre
-          role="alert"
-          className="overflow-auto whitespace-pre-wrap p-3 text-xs"
-        >
-          {error}
-        </pre>
-      )}
-      {pdf ? (
-        <PdfViewer
-          key={
-            matching ? build?.artifactId : `main:${proposal.projectId}:${main}`
-          }
-          data={pdf}
-          artifactId={
-            matching ? build?.artifactId : `main:${proposal.projectId}:${main}`
-          }
-          scale={scale}
-          onScaleChange={setScale}
-          onSynctexClick={(page, x, y) => {
-            if (!currentBuild) return;
-            const boxes = build?.locations.filter((b) => b.page === page) ?? [];
-            boxes.sort(
-              (a, b) =>
-                Math.abs(a.y - y) +
-                Math.abs(a.x - x) -
-                Math.abs(b.y - y) -
-                Math.abs(b.x - x),
-            );
-            if (boxes[0])
-              window.dispatchEvent(
-                new CustomEvent("proposal-source", {
-                  detail: {
-                    proposalId: proposal.id,
-                    generation: proposal.generation,
-                    path: boxes[0].file,
-                    line: boxes[0].line,
-                  },
-                }),
-              );
-          }}
-        />
-      ) : (
-        <p className="p-4 text-sm">
-          {error
-            ? "No successfully compiled PDF is available yet."
-            : "Compiling proposal…"}
-        </p>
-      )}
-      {reports && build && currentBuild && side === "result" && (
-        <ProposalReport proposal={proposal} main={main} result={build} />
-      )}
-    </section>
-  );
-}
-
-export function ProposalBar() {
+export function PendingChatWork() {
   const state = useAgentChatStore();
-  const p = activeProposal(state);
   if (!state.proposals.length) return null;
-  const title = state.tabs.find((t) => t.id === state.activeTabId)?.title;
   return (
     <div className="flex flex-wrap items-center gap-3 border-b px-3 py-2 text-xs">
-      <strong>
-        {p && !state.viewMain ? `Proposal · ${title}` : "Main document"}
-      </strong>
       <span>
         {state.proposals.filter((p) => p.state !== "original").length}{" "}
         unresolved proposals
@@ -332,20 +45,11 @@ export function ProposalBar() {
             Recover interrupted chat
           </button>
         ))}
-      {p && (
-        <button
-          type="button"
-          className="underline"
-          onClick={() => state.setViewMain(!state.viewMain)}
-        >
-          {state.viewMain ? "View proposal" : "View main document"}
-        </button>
-      )}
     </div>
   );
 }
 
-function ProposalReport({
+export function ProposalReport({
   proposal,
   main,
   result,
@@ -429,7 +133,7 @@ function ProposalReport({
     <div
       role="region"
       aria-label="Proposal visual report"
-      className="max-h-64 shrink-0 overflow-auto border-t p-2 text-xs"
+      className="h-full w-[300px] max-w-full shrink-0 overflow-auto border-l p-2 text-xs"
     >
       <strong>Visual changes · immutable base → proposal</strong>
       {error ? (

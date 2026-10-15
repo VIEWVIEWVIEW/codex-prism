@@ -1,3 +1,4 @@
+import { clearChatPdfCache } from "@/hooks/use-chat-pdf";
 import { toast } from "sonner";
 import { coalescedRefresh } from "@/lib/coalesced-refresh";
 import { isImageUpload, projectImageFolder } from "@/lib/project-images";
@@ -74,6 +75,7 @@ export function hasPdfData(): boolean {
 
 export function clearPdfBytesCache() {
   _pdfBytesCache.clear();
+  clearChatPdfCache();
   _currentPdfRootId = null;
 }
 

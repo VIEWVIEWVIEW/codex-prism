@@ -69,7 +69,11 @@ export function AgentChatDrawer({
     error: useAgentChatStore((state) => state.error),
     isStreaming: useAgentChatStore((state) => state.isStreaming),
     locked: useAgentChatStore((state) => state.locked),
-    pendingAttachments: useAgentChatStore((state) => state.pendingAttachments),
+    pendingAttachments: useAgentChatStore(
+      (state) => state.pendingAttachments,
+    ).filter(
+      (a) => !a.chatId || a.chatId === useAgentChatStore.getState().activeTabId,
+    ),
     projectId: useAgentChatStore((state) => state.projectId),
     requestPinnedContextRemoval: useAgentChatStore(
       (state) => state.requestPinnedContextRemoval,

@@ -3,7 +3,7 @@ import gi,json,time,sys
 gi.require_version('Gtk','3.0');gi.require_version('WebKit2','4.1')
 from gi.repository import Gtk,WebKit2,GLib
 window=Gtk.Window();window.set_default_size(1400,900)
-view=WebKit2.WebView();window.add(view);window.show_all()
+view=WebKit2.WebView();view.get_settings().set_enable_write_console_messages_to_stdout(True);window.add(view);window.show_all()
 deadline=time.time()+180;started=False;busy=False;passed=False
 def evaluate(script, callback):
  def done(view,result,_):

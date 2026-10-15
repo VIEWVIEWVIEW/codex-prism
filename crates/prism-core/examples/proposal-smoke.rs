@@ -111,6 +111,18 @@ async fn main() {
                 Ok(json!(String::from_utf8_lossy(&out.stdout)))
             }
             "fixture" => Ok(json!({"project":project,"source":source})),
+            "fixture_pdf" | "compile_latex" | "load_existing_pdf" => {
+                let output = std::process::Command::new("pdflatex")
+                    .current_dir(&root)
+                    .args(["-interaction=nonstopmode", "main.tex"])
+                    .output()
+                    .unwrap();
+                if !output.status.success() {
+                    Err(String::from_utf8_lossy(&output.stdout).into())
+                } else {
+                    Ok(json!(std::fs::read(root.join("main.pdf")).unwrap()))
+                }
+            }
             "codex_send" => {
                 backend
                     .codex_send_for_chat(

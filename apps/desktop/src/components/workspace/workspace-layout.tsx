@@ -1,5 +1,3 @@
-import { activeProposal, useAgentChatStore } from "@/stores/agent-chat-store";
-import { ProposalBar, ProposalSource, ProposalPdf } from "./proposal-preview";
 import {
   useCallback,
   useEffect,
@@ -32,8 +30,6 @@ function easeInOutSmooth(progress: number) {
 }
 
 export function WorkspaceLayout() {
-  const chat = useAgentChatStore();
-  const proposal = chat.viewMain ? undefined : activeProposal(chat);
   const initialized = useDocumentStore((s) => s.initialized);
   const previewVisible = usePreviewStore((s) => s.visible);
   const setPreviewVisible = usePreviewStore((s) => s.setVisible);
@@ -187,7 +183,6 @@ export function WorkspaceLayout() {
 
   return (
     <div ref={workspaceRef} className="flex h-full flex-col">
-      <ProposalBar />
       <PanelGroup direction="horizontal" className="h-full">
         <Panel
           id="sidebar"
@@ -233,14 +228,7 @@ export function WorkspaceLayout() {
           <div className="flex h-full min-h-0 flex-col overflow-hidden">
             {codeVisible && (
               <div className="min-h-0 flex-1 overflow-hidden">
-                {proposal ? (
-                  <ProposalSource
-                    key={`${proposal.id}:${proposal.generation}`}
-                    proposal={proposal}
-                  />
-                ) : (
-                  <LatexEditor />
-                )}
+                <LatexEditor />
               </div>
             )}
             <ProposedChangesPanel />
@@ -260,11 +248,7 @@ export function WorkspaceLayout() {
             minSize={25}
             className="min-w-0"
           >
-            {proposal ? (
-              <ProposalPdf key={proposal.id} proposal={proposal} />
-            ) : (
-              <PdfPreview />
-            )}
+            <PdfPreview />
           </Panel>
         )}
       </PanelGroup>

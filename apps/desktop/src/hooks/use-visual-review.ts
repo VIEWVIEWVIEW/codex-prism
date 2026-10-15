@@ -13,8 +13,9 @@ import { mergeVisualItems } from "@/lib/visual-regions";
 import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
 import { createLogger } from "@/lib/debug/logger";
 const log = createLogger("visual-review");
-export function useVisualReview(main?: string) {
-  const enabled = useSettingsStore((s) => s.visualChangeReports);
+export function useVisualReview(main?: string, allowed = true) {
+  const configured = useSettingsStore((s) => s.visualChangeReports);
+  const enabled = allowed && configured;
   const documentProject = useDocumentStore((s) => s.projectId);
   const project = useAgentChatStore((s) => s.projectId);
   const review = useAgentChatStore((s) => s.review);

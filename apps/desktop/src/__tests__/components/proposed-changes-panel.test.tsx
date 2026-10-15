@@ -6,6 +6,7 @@ import { loadReviewDiff } from "@/lib/review-diff-client";
 import { reviewDiff } from "@/lib/review-diff";
 const { state } = vi.hoisted(() => ({
   state: {
+    proposals: [],
     review: {
       active: false,
       changes: [

@@ -15,6 +15,7 @@ import {
   useDocumentStore,
 } from "./document-store";
 export interface PromptContextOverride {
+  chatId?: string;
   label: string;
   filePath: string;
   selectedText: string;
@@ -49,10 +50,6 @@ interface ChatState {
   activeProjectPath: string | null;
   review: Review;
   proposals: Proposal[];
-  viewMain: boolean;
-  proposalSide: "base" | "result";
-  setProposalSide(side: "base" | "result"): void;
-  setViewMain(value: boolean): void;
   decideProposal(action: "apply" | "discard" | "repair"): Promise<void>;
   locked: boolean;
   requests: AgentEvent[];
@@ -147,10 +144,6 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
   projectId: null,
   activeProjectPath: null,
   proposals: [],
-  viewMain: false,
-  proposalSide: "result",
-  setProposalSide: (proposalSide) => set({ proposalSide }),
-  setViewMain: (viewMain) => set({ viewMain }),
   decideProposal: async (action) => {
     const state = get();
     const p = activeProposal(state);
@@ -237,8 +230,6 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
       projectId: null,
       review: { active: false, changes: [] },
       proposals: [],
-      viewMain: false,
-      proposalSide: "result",
       locked: !!root,
       requests: [],
       error: null,
@@ -260,8 +251,6 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
     set((s) => ({
       tabs: [...s.tabs, t],
       activeTabId: t.id,
-      viewMain: false,
-      proposalSide: "result",
       error: null,
       isStreaming: false,
     }));
@@ -275,8 +264,6 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
     if (t)
       set({
         activeTabId: id,
-        viewMain: false,
-        proposalSide: "result",
         error: t.error,
         isStreaming: t.isStreaming,
       });
@@ -421,7 +408,9 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
             state.projectId,
             t.sessionId,
             t.turnId,
-            prompt,
+            context
+              ? `[${context.label}; project file: ${context.filePath}]\n${context.selectedText}\n\n${prompt}`
+              : prompt,
           );
         } catch (e) {
           set({ error: String(e) });
@@ -454,7 +443,9 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
         throw new Error("This project has an active turn.");
       const active = doc.files.find((f) => f.id === doc.activeFileId);
       const attachments = [
-        ...state.pendingAttachments,
+        ...state.pendingAttachments.filter(
+          (a) => !a.chatId || a.chatId === t.id,
+        ),
         ...(context ? [context] : []),
       ];
       const text = [
@@ -470,7 +461,9 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
         locked: true,
         isStreaming: true,
         error: null,
-        pendingAttachments: [],
+        pendingAttachments: s.pendingAttachments.filter(
+          (a) => a.chatId && a.chatId !== t.id,
+        ),
         tabs: s.tabs.map((x) =>
           x.id === t.id
             ? {
@@ -565,8 +558,6 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
       projectId: p.id,
       tabs: [...s.tabs, t],
       activeTabId: t.id,
-      viewMain: false,
-      proposalSide: "result",
       error: null,
       isStreaming: false,
     }));

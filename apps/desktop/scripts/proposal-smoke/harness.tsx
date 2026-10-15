@@ -1,12 +1,6 @@
 import { createRoot } from "react-dom/client";
 import "../../src/styles/globals.css";
 import {
-  ProposalBar,
-  ProposalSource,
-  ProposalPdf,
-} from "../../src/components/workspace/proposal-preview";
-import { ProposedChangesPanel } from "../../src/components/agent-chat/proposed-changes-panel";
-import {
   useAgentChatStore,
   activeProposal,
   ensureAgentEvents,
@@ -17,6 +11,13 @@ import { proposals } from "../../src/lib/backend";
 const callbacks = new Map<number, (value: unknown) => void>();
 const listeners = new Map<string, number>();
 async function call(command: string, args: Record<string, unknown> = {}) {
+  if (["codex_sessions", "detect_editors"].includes(command)) return [];
+  if (command === "codex_status")
+    return {
+      account: { requiresOpenaiAuth: false },
+      models: { data: [] },
+      version: "fixture",
+    };
   if (command === "plugin:event|listen") {
     listeners.set(String(args.event), Number(args.handler));
     return 1;
@@ -27,16 +28,28 @@ async function call(command: string, args: Record<string, unknown> = {}) {
   });
   const result = await response.json();
   if (result.error) throw new Error(result.error);
+  if (command === "compile_latex" || command === "load_existing_pdf")
+    return new Uint8Array(result.value).buffer;
   return result.value;
 }
 (window as any).__TAURI_INTERNALS__ = {
   invoke: call,
+  metadata: {
+    currentWindow: { label: "main" },
+    currentWebview: { label: "main" },
+  },
   transformCallback: (fn: any) => {
     const id = callbacks.size + 1;
     callbacks.set(id, fn);
     return id;
   },
 };
+(window as any).__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+  unregisterListener: () => {},
+};
+const { WorkspaceLayout } = await import(
+  "../../src/components/workspace/workspace-layout"
+);
 const { project, source } = await call("fixture");
 useDocumentStore.setState({
   projectId: project.id,
@@ -60,39 +73,16 @@ useAgentChatStore.setState({
   activeProjectPath: project.root,
 });
 useSettingsStore.setState({ visualChangeReports: false, autoRecompile: false });
+useDocumentStore
+  .getState()
+  .setPdfData(new Uint8Array(await call("fixture_pdf")), "main.tex");
 await ensureAgentEvents();
 setInterval(async () => {
   for (const event of await call("events"))
     callbacks.get(listeners.get(event.event)!)?.({ ...event, id: 1 });
 }, 100);
 function Harness() {
-  const s = useAgentChatStore();
-  const p = activeProposal(s);
-  return (
-    <div className="flex h-screen flex-col">
-      <ProposalBar />
-      <nav>
-        {s.tabs.map((t) => (
-          <button
-            key={t.id}
-            className="p-3"
-            onClick={() => s.setActiveTab(t.id)}
-          >
-            {t.title}
-          </button>
-        ))}
-      </nav>
-      <div className="flex min-h-0 flex-1">
-        <div className="w-1/2">
-          {p && <ProposalSource key={`${p.id}:${p.generation}`} proposal={p} />}
-        </div>
-        <div className="w-1/2">
-          {p && <ProposalPdf key={p.id} proposal={p} />}
-        </div>
-      </div>
-      <ProposedChangesPanel />
-    </div>
-  );
+  return <WorkspaceLayout />;
 }
 createRoot(document.getElementById("root")!).render(<Harness />);
 const wait = async (predicate: () => boolean) => {
@@ -113,6 +103,10 @@ const text = async () =>
     await s.sendPrompt(name);
     return id;
   };
+  await wait(() => !!document.querySelector(".mupdf-text-layer"));
+  document.querySelector<HTMLButtonElement>('[aria-label="Code"]')?.click();
+  await wait(() => !!document.querySelector(".cm-editor"));
+  const editor = document.querySelector(".cm-editor");
   const a = await send("A");
   useAgentChatStore.getState().createTab();
   const b = await send("B");
@@ -123,6 +117,12 @@ const text = async () =>
       .length !== 2
   )
     throw new Error("Both chats must run concurrently");
+  if (document.querySelector(".cm-editor") !== editor)
+    throw new Error("Editor remounted");
+  if (!document.querySelector(".mupdf-text-layer"))
+    throw new Error("PDF hidden during agent turn");
+  if (document.querySelector('[aria-label="Proposal source"]'))
+    throw new Error("Proposal source view still present");
   await useAgentChatStore.getState().cancelExecution();
   useAgentChatStore.getState().setActiveTab(a);
   await useAgentChatStore.getState().cancelExecution();
@@ -132,36 +132,27 @@ const text = async () =>
   await wait(
     () =>
       !!document.querySelector(".mupdf-text-layer") &&
-      document.body.innerText.includes("A passage"),
+      Array.from(document.querySelectorAll(".mupdf-text-layer")).some(
+        (el) =>
+          !el.closest(".invisible") && el.textContent?.includes("A passage"),
+      ),
   );
   useAgentChatStore.getState().setActiveTab(b);
   await wait(
     () =>
       !!document.querySelector(".mupdf-text-layer") &&
-      document.body.innerText.includes("B passage"),
+      Array.from(document.querySelectorAll(".mupdf-text-layer")).some(
+        (el) =>
+          !el.closest(".invisible") && el.textContent?.includes("B passage"),
+      ),
   );
   if (
-    document
-      .querySelector('[aria-label="Proposal source"]')
-      ?.textContent?.includes("A passage")
+    document.querySelector(".cm-editor") !== editor ||
+    !document
+      .querySelector(".cm-content")
+      ?.textContent?.includes("Original passage")
   )
-    throw new Error("Wrong source in B");
-  useAgentChatStore.getState().setProposalSide("base");
-  await wait(
-    () =>
-      !!document.querySelector(".mupdf-text-layer") &&
-      !!document
-        .querySelector('[aria-label="Proposal source"]')
-        ?.textContent?.includes("Original passage"),
-  );
-  useAgentChatStore.getState().setProposalSide("result");
-  await wait(
-    () =>
-      !!document.querySelector(".mupdf-text-layer") &&
-      !!document
-        .querySelector('[aria-label="Proposal source"]')
-        ?.textContent?.includes("B passage"),
-  );
+    throw new Error("Chat switching changed main source");
   useSettingsStore.setState({ visualChangeReports: true });
   await wait(
     () => !!document.querySelector('[aria-label="Proposal visual report"] img'),
@@ -183,7 +174,11 @@ const text = async () =>
   await wait(
     () =>
       !!document.querySelector(".mupdf-text-layer") &&
-      document.body.innerText.includes("Repaired A and B passage"),
+      Array.from(document.querySelectorAll(".mupdf-text-layer")).some(
+        (el) =>
+          !el.closest(".invisible") &&
+          el.textContent?.includes("Repaired A and B passage"),
+      ),
   );
   await useAgentChatStore.getState().decideProposal("apply");
   if (!(await text()).includes("Repaired A and B passage"))
@@ -193,7 +188,7 @@ const text = async () =>
   return {
     ok: true,
     steps:
-      "two running chats → isolated source/PDF → apply A → conflict B → agent repair → apply",
+      "two running chats → stable main editor and visible PDF → independent chat PDFs → apply A → conflict B → agent repair → apply",
     history: await call("git_log"),
   };
 };

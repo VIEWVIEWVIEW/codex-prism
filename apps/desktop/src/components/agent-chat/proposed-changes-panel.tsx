@@ -1,3 +1,4 @@
+import { PendingChatWork } from "../workspace/proposal-preview";
 import { useEffect, useRef, useState } from "react";
 import { ChevronDownIcon } from "lucide-react";
 import { activeProposal, useAgentChatStore } from "@/stores/agent-chat-store";
@@ -9,8 +10,13 @@ import { cn } from "@/lib/utils";
 export function ProposedChangesPanel() {
   const state = useAgentChatStore();
   const proposal = activeProposal(state);
-  if (proposal) return <ProposalReview />;
-  return <LegacyChangesPanel />;
+  return (
+    <>
+      {" "}
+      <PendingChatWork />
+      {proposal ? <ProposalReview /> : <LegacyChangesPanel />}
+    </>
+  );
 }
 function ProposalReview() {
   const state = useAgentChatStore();

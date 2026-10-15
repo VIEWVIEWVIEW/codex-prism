@@ -67,7 +67,6 @@ beforeEach(() => {
     activeProjectPath: "/paper",
     locked: false,
     proposals: [],
-    viewMain: false,
     review: { active: false, changes: [] },
     isStreaming: false,
     error: null,
@@ -568,4 +567,53 @@ describe("concurrent proposals", () => {
     expect(useAgentChatStore.getState().error).toBeNull();
     expect(useAgentChatStore.getState().tabs[0].error).toBe("a failed");
   });
+});
+
+it("keeps captured PDF attachments with their owning chat", async () => {
+  const s = useAgentChatStore.getState();
+  s.addPendingAttachment({
+    chatId: "other",
+    label: "other capture",
+    filePath: "attachments/other.png",
+    selectedText: "other PDF",
+  });
+  s.addPendingAttachment({
+    chatId: "tab1",
+    label: "this capture",
+    filePath: "attachments/this.png",
+    selectedText: "this PDF",
+  });
+  await s.sendPrompt("Review this");
+  const prompt = vi.mocked(backend.agent.send).mock.calls[0][2];
+  expect(prompt).toContain("this PDF");
+  expect(prompt).not.toContain("other PDF");
+  expect(
+    useAgentChatStore.getState().pendingAttachments.map((a) => a.chatId),
+  ).toEqual(["other"]);
+});
+
+it("includes PDF selection context when steering a running chat", async () => {
+  const s = useAgentChatStore.getState();
+  useAgentChatStore.setState({
+    tabs: [
+      {
+        ...s.tabs[0],
+        sessionId: "thread1",
+        turnId: "turn1",
+        isStreaming: true,
+      },
+    ],
+  });
+  await s.sendPrompt("Fix this", {
+    label: "PDF page 1",
+    filePath: "main.tex",
+    selectedText: "selected passage",
+  });
+  expect(backend.agent.control).toHaveBeenCalledWith(
+    "p1",
+    "thread1",
+    "turn1",
+    expect.stringContaining("selected passage"),
+  );
+  expect(backend.agent.send).not.toHaveBeenCalled();
 });
