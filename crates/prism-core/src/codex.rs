@@ -773,7 +773,7 @@ pub(crate) async fn codex_send_for_chat(
     let _ = main_document;
     let _ = app.emit_review(json!({"projectId":project_id}));
     let result: Result<Value, String> = async {
-        let mut config = json!({"cwd":workspace,"approvalPolicy":"on-request","approvalsReviewer":"user","sandbox":"workspace-write","config":{"sandbox_workspace_write.network_access":false,"sandbox_workspace_write.writable_roots":[],"sandbox_workspace_write.exclude_tmpdir_env_var":true,"sandbox_workspace_write.exclude_slash_tmp":true},"developerInstructions":concat!("You are the scientific writing assistant in codex-prism. This is an isolated proposal workspace. It may have been refreshed from the latest main document since your previous turn: inspect current files before editing. Edit only this workspace. Changes require user acceptance.\n\n",include_str!("writing-guidance.txt"))});
+        let mut config = json!({"cwd":workspace,"approvalPolicy":"on-request","approvalsReviewer":"user","sandbox":"workspace-write","config":{"sandbox_workspace_write.network_access":false,"sandbox_workspace_write.writable_roots":[],"sandbox_workspace_write.exclude_tmpdir_env_var":false,"sandbox_workspace_write.exclude_slash_tmp":false},"developerInstructions":concat!("You are the scientific writing assistant in codex-prism. This is an isolated proposal workspace. It may have been refreshed from the latest main document since your previous turn: inspect current files before editing. Keep project edits in this workspace. Temporary files may use /tmp and TMPDIR. Commands requiring unrestricted execution may request user approval. Project changes require user acceptance.\n\n",include_str!("writing-guidance.txt"))});
         if let Some(m) = model.filter(|s| !s.is_empty()) { config["model"] = json!(m); }
         let thread = if let Some(id) = thread_id { config["threadId"] = json!(id); c.call("thread/resume", config).await? } else { c.call("thread/start", config).await? };
         let id = thread["thread"]["id"].as_str().ok_or("Missing thread ID")?.to_string();
@@ -785,7 +785,7 @@ pub(crate) async fn codex_send_for_chat(
         let _ = app.emit_agent(json!({"method":"prism/session","params":{"projectId":project_id,"threadId":id,"chatId":chat_id,"proposalId":proposal.id}}));
         let mut input = vec![json!({"type":"text","text":prompt})];
         for url in images.unwrap_or_default() { input.push(json!({"type":"image","imageUrl":url})); }
-        let mut params = json!({"threadId":id,"cwd":workspace,"sandboxPolicy":{"type":"workspaceWrite","writableRoots":[workspace],"networkAccess":false,"excludeTmpdirEnvVar":true,"excludeSlashTmp":true},"input":input});
+        let mut params = json!({"threadId":id,"cwd":workspace,"sandboxPolicy":{"type":"workspaceWrite","writableRoots":[workspace],"networkAccess":false,"excludeTmpdirEnvVar":false,"excludeSlashTmp":false},"input":input});
         if let Some(e) = effort.filter(|s|!s.is_empty()) { params["effort"] = json!(e); }
         let turn = c.call("turn/start", params).await?;
         if let Some(id) = turn["turn"]["id"].as_str() { crate::proposals::set_turn(&app, &proposal.id, id)?; }
@@ -939,12 +939,6 @@ pub(crate) async fn codex_respond(
                     .as_str()
                     .is_some_and(|d| d.starts_with("accept"))
                 {
-                    if request["method"] == "item/commandExecution/requestApproval"
-                        && params["sandboxPermissions"] != "use_default"
-                        && params["networkApprovalContext"].is_null()
-                    {
-                        return Err("Unrestricted command execution is unavailable in isolated proposals. Decline this request so the agent can continue inside its workspace.".into());
-                    }
                     if let Some(grant) = params["grantRoot"].as_str() {
                         let path = std::path::Path::new(grant);
                         let rel = path

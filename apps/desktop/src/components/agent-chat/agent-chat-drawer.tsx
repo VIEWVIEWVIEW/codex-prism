@@ -837,7 +837,8 @@ function Request({ event: e }: { event: AgentEvent }) {
           .join("\n") || "Codex needs your permission to continue."}
       </pre>
       <p className="text-xs">
-        Agent edits are restricted to this chat’s proposal workspace.
+        Project edits belong in this chat’s proposal workspace. Approved
+        unrestricted commands can access files outside it.
       </p>
       {approval ? (
         <>
