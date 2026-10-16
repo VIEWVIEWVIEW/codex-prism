@@ -7,6 +7,7 @@ mod events;
 mod history;
 pub mod latex;
 mod pdf_export;
+mod project_preview;
 pub mod projects;
 pub mod proposals;
 mod review_storage;

@@ -5,12 +5,21 @@ import { ProjectPicker } from "@/components/project-picker";
 import { useProjectStore } from "@/stores/project-store";
 import { useAgentSetupStore } from "@/stores/agent-setup-store";
 
+vi.mock("@/lib/project-preview", () => ({
+  loadProjectPreview: async (path: string) => ({
+    kind: "pdf",
+    url: `blob:${path}`,
+    createdAt: null,
+  }),
+}));
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: async () => "test" }));
 vi.mock("next-themes", () => ({
   useTheme: () => ({ theme: "light", setTheme: vi.fn() }),
 }));
 
 it("organizes projects through folder creation, moves, navigation, rename and removal", async () => {
+  (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+  vi.stubGlobal("IntersectionObserver", undefined);
   const original = useProjectStore.getState();
   const check = vi
     .spyOn(useAgentSetupStore.getState(), "checkStatus")
@@ -43,6 +52,10 @@ it("organizes projects through folder creation, moves, navigation, rename and re
     });
   try {
     await act(async () => root.render(<ProjectPicker />));
+    expect(
+      host.querySelector('img[alt="paper preview"]')?.getAttribute("src"),
+    ).toBe("blob:/work/paper");
+    expect(host.querySelector('img[alt="book preview"]')).not.toBeNull();
     await click('[aria-label="New folder"]');
     await fillName("Research");
     await click('[role="dialog"] button[type="submit"]');
@@ -72,6 +85,9 @@ it("organizes projects through folder creation, moves, navigation, rename and re
       host.querySelector('[aria-label="Folder for paper"]'),
     ).not.toBeNull();
     expect(host.querySelector('[aria-label="Folder for book"]')).toBeNull();
+    expect(
+      host.querySelector('img[alt="paper preview"]')?.getAttribute("src"),
+    ).toBe("blob:/work/paper");
     await click('[aria-label="Rename folder Research"]');
     await fillName("Papers");
     await click('[role="dialog"] button[type="submit"]');
@@ -94,5 +110,6 @@ it("organizes projects through folder creation, moves, navigation, rename and re
     host.remove();
     useProjectStore.setState(original);
     check.mockRestore();
+    vi.unstubAllGlobals();
   }
 });

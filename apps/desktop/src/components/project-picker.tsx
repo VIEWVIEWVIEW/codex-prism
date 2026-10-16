@@ -1,4 +1,8 @@
 import {
+  loadProjectPreview,
+  type ProjectPreviewData,
+} from "@/lib/project-preview";
+import {
   type ComponentType,
   type ReactNode,
   useCallback,
@@ -11,7 +15,6 @@ import { invoke } from "@/lib/backend";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@/lib/backend";
 import { open } from "@/lib/backend/desktop-host";
-import { readFile, readTextFile, stat } from "@tauri-apps/plugin-fs";
 import { toast } from "sonner";
 import {
   FolderOpenIcon,
@@ -39,9 +42,6 @@ import { useProjectStore, type RecentProject } from "@/stores/project-store";
 import { useDocumentStore } from "@/stores/document-store";
 import { useAgentSetupStore } from "@/stores/agent-setup-store";
 import { useUvSetupStore } from "@/stores/uv-setup-store";
-import { compileLatex } from "@/lib/latex-compiler";
-import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
-import { exists, join } from "@/lib/tauri/fs";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -66,22 +66,10 @@ interface DefaultProject {
 type ProjectPickerSection = "projects" | "settings";
 type SettingsDetailSection = "provider" | "environment";
 
-type ProjectPreviewData = {
-  createdAt: number | null;
-} & (
-  | { kind: "pdf"; url: string }
-  | { kind: "tex"; fileName: string; lines: string[] }
-  | { kind: "empty" }
-);
-
 type ProjectPreviewState =
   | { status: "loading" }
   | { status: "ready"; data: ProjectPreviewData }
   | { status: "error" };
-
-const projectPreviewCache = new Map<string, ProjectPreviewData>();
-const projectPreviewRequests = new Map<string, Promise<ProjectPreviewData>>();
-let projectPreviewCompileQueue: Promise<void> = Promise.resolve();
 
 export function ProjectPicker() {
   const [showModeDialog, setShowModeDialog] = useState(false);
@@ -571,112 +559,6 @@ interface SkillsStatus {
   location: string;
 }
 
-function projectPreviewCacheKey(project: RecentProject) {
-  return `${project.path}:${project.lastOpened}`;
-}
-
-function enqueueProjectPreviewCompile<T>(task: () => Promise<T>): Promise<T> {
-  const run = projectPreviewCompileQueue.then(task, task);
-  projectPreviewCompileQueue = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run;
-}
-
-async function firstExistingProjectFile(
-  projectPath: string,
-  candidates: string[][],
-): Promise<{ absolutePath: string; relativePath: string } | null> {
-  for (const segments of candidates) {
-    const absolutePath = await join(projectPath, ...segments);
-    if (await exists(absolutePath)) {
-      return {
-        absolutePath,
-        relativePath: segments.join("/"),
-      };
-    }
-  }
-  return null;
-}
-
-async function firstExistingPath(
-  projectPath: string,
-  candidates: string[][],
-): Promise<string | null> {
-  return (
-    (await firstExistingProjectFile(projectPath, candidates))?.absolutePath ??
-    null
-  );
-}
-
-async function renderPdfThumbnailFromBytes(bytes: Uint8Array): Promise<string> {
-  const buffer = new ArrayBuffer(bytes.byteLength);
-  new Uint8Array(buffer).set(bytes);
-  const client = getMupdfClient();
-  let docId: number | null = null;
-
-  try {
-    docId = await client.openDocument(buffer);
-    const pngBuffer = await client.renderThumbnail(docId, 0, 420);
-    const blob = new Blob([new Uint8Array(pngBuffer)], { type: "image/png" });
-    return URL.createObjectURL(blob);
-  } finally {
-    if (docId !== null) {
-      await client.closeDocument(docId).catch(() => {});
-    }
-  }
-}
-
-async function renderPdfThumbnail(pdfPath: string): Promise<string> {
-  return renderPdfThumbnailFromBytes(await readFile(pdfPath));
-}
-
-function texPreviewLines(content: string) {
-  return content
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .slice(0, 12)
-    .map((line) => (line.length > 70 ? `${line.slice(0, 67)}...` : line));
-}
-
-function statDateToMs(value: unknown): number | null {
-  if (!value) return null;
-  if (value instanceof Date) {
-    const time = value.getTime();
-    return Number.isFinite(time) ? time : null;
-  }
-  if (typeof value === "number") {
-    if (!Number.isFinite(value) || value <= 0) return null;
-    return value < 1_000_000_000_000 ? value * 1000 : value;
-  }
-  if (typeof value === "string") {
-    const time = Date.parse(value);
-    return Number.isFinite(time) ? time : null;
-  }
-  return null;
-}
-
-async function getProjectCreatedAt(
-  projectPath: string,
-): Promise<number | null> {
-  try {
-    const info = (await stat(projectPath)) as {
-      birthtime?: unknown;
-      ctime?: unknown;
-      mtime?: unknown;
-    };
-    return (
-      statDateToMs(info.birthtime) ??
-      statDateToMs(info.ctime) ??
-      statDateToMs(info.mtime)
-    );
-  } catch {
-    return null;
-  }
-}
-
 function formatProjectCreatedDate(createdAt: number | null) {
   if (!createdAt) return "";
   return new Intl.DateTimeFormat("en-US", {
@@ -684,84 +566,6 @@ function formatProjectCreatedDate(createdAt: number | null) {
     month: "short",
     day: "numeric",
   }).format(new Date(createdAt));
-}
-
-async function loadProjectPreview(
-  project: RecentProject,
-): Promise<ProjectPreviewData> {
-  const cacheKey = projectPreviewCacheKey(project);
-  const cached = projectPreviewCache.get(cacheKey);
-  if (cached) return cached;
-
-  const pending = projectPreviewRequests.get(cacheKey);
-  if (pending) return pending;
-
-  const promise = (async () => {
-    const createdAt = await getProjectCreatedAt(project.path);
-    const pdfPath = await firstExistingPath(project.path, [
-      [".prism", "build", "main.pdf"],
-      [".prism", "build", "document.pdf"],
-      ["main.pdf"],
-      ["document.pdf"],
-    ]);
-
-    if (pdfPath) {
-      const data: ProjectPreviewData = {
-        kind: "pdf",
-        url: await renderPdfThumbnail(pdfPath),
-        createdAt,
-      };
-      projectPreviewCache.set(cacheKey, data);
-      return data;
-    }
-
-    const texFile = await firstExistingProjectFile(project.path, [
-      ["main.tex"],
-      ["document.tex"],
-    ]);
-
-    if (texFile) {
-      try {
-        const pdfBytes = await enqueueProjectPreviewCompile(() =>
-          compileLatex(project.path, texFile.relativePath),
-        );
-        const data: ProjectPreviewData = {
-          kind: "pdf",
-          url: await renderPdfThumbnailFromBytes(pdfBytes),
-          createdAt,
-        };
-        projectPreviewCache.set(cacheKey, data);
-        return data;
-      } catch (err) {
-        console.warn("Failed to compile project preview:", {
-          path: project.path,
-          target: texFile.relativePath,
-          error: err,
-        });
-      }
-
-      const fileName = texFile.absolutePath.split(/[\\/]/).pop() ?? "main.tex";
-      const data: ProjectPreviewData = {
-        kind: "tex",
-        fileName,
-        lines: texPreviewLines(await readTextFile(texFile.absolutePath)),
-        createdAt,
-      };
-      projectPreviewCache.set(cacheKey, data);
-      return data;
-    }
-
-    const data: ProjectPreviewData = { kind: "empty", createdAt };
-    projectPreviewCache.set(cacheKey, data);
-    return data;
-  })();
-
-  projectPreviewRequests.set(cacheKey, promise);
-  try {
-    return await promise;
-  } finally {
-    projectPreviewRequests.delete(cacheKey);
-  }
 }
 
 function ProjectPreviewCard({
@@ -773,6 +577,13 @@ function ProjectPreviewCard({
   onOpen: () => void;
   onRemove: () => void;
 }) {
+  const folderView = useProjectStore((s) => s.folderView);
+  const [refresh, setRefresh] = useState(0);
+  useEffect(() => {
+    const recheck = () => setRefresh((value) => value + 1);
+    window.addEventListener("focus", recheck);
+    return () => window.removeEventListener("focus", recheck);
+  }, []);
   const cardRef = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
   useEffect(() => {
@@ -792,9 +603,8 @@ function ProjectPreviewCard({
     if (cardRef.current) observer.observe(cardRef.current);
     return () => observer.disconnect();
   }, []);
-  const [preview, setPreview] = useState<ProjectPreviewState>(() => {
-    const cached = projectPreviewCache.get(projectPreviewCacheKey(project));
-    return cached ? { status: "ready", data: cached } : { status: "loading" };
+  const [preview, setPreview] = useState<ProjectPreviewState>({
+    status: "loading",
   });
   const createdDateLabel =
     preview.status === "ready"
@@ -804,15 +614,8 @@ function ProjectPreviewCard({
   useEffect(() => {
     if (!visible) return;
     let cancelled = false;
-    const cacheKey = projectPreviewCacheKey(project);
-    const cached = projectPreviewCache.get(cacheKey);
-    if (cached) {
-      setPreview({ status: "ready", data: cached });
-      return;
-    }
-
     setPreview({ status: "loading" });
-    loadProjectPreview(project)
+    loadProjectPreview(project.path)
       .then((data) => {
         if (!cancelled) setPreview({ status: "ready", data });
       })
@@ -827,7 +630,7 @@ function ProjectPreviewCard({
     return () => {
       cancelled = true;
     };
-  }, [project.path, project.lastOpened, visible]);
+  }, [project.path, project.lastOpened, visible, folderView, refresh]);
 
   return (
     <div ref={cardRef} className="group min-w-0">
