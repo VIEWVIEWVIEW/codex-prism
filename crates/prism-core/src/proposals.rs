@@ -79,6 +79,8 @@ pub(crate) struct Proposal {
     pub cancel_requested: bool,
     #[serde(default)]
     pub turn_id: Option<String>,
+    #[serde(default)]
+    pub commit_subject: Option<String>,
     pub generation: u64,
     pub state: String,
     pub conflicts: Vec<String>,
@@ -165,6 +167,7 @@ fn create(
         chat_id: None,
         error: None,
         cancel_requested: false,
+        commit_subject: None,
         turn_id: None,
         generation: 0,
         state: "ready".into(),
@@ -240,6 +243,15 @@ pub(crate) fn begin_for_chat(
     p.cancel_requested = false;
     p.turn_id = None;
     let mut r = snapshot(app, &p)?;
+    // Repair prompts are generated diagnostics, not a new user request.
+    if p.commit_subject.is_none() && p.parent.is_none() {
+        p.commit_subject = r
+            .history_prompts
+            .first()
+            .map(String::as_str)
+            .or(prompt.as_deref())
+            .and_then(workflow::prompt_subject);
+    }
     if workflow::include_prompt(&projects::get(app, project)?.root.to_string_lossy()) {
         if let Some(prompt) = prompt {
             r.history_prompts.push(prompt);
@@ -477,6 +489,7 @@ fn record_with(app: &Backend, j: &Journal, target: Option<&str>) -> Result<Optio
             &j.proposal.id,
             patch,
             &r.history_prompts,
+            j.proposal.commit_subject.as_deref(),
             || {
                 if projects::isolated_snapshot(&root)? != j.before {
                     return Err("Main document changed during acceptance; retry".into());
@@ -490,11 +503,12 @@ fn record_with(app: &Backend, j: &Journal, target: Option<&str>) -> Result<Optio
         )?
         .err()
     } else {
-        workflow::accept(
+        workflow::accept_with_subject(
             &root.to_string_lossy(),
             &j.proposal.id,
             patch,
             &r.history_prompts,
+            j.proposal.commit_subject.as_deref(),
         )
         .err()
     };
@@ -626,6 +640,7 @@ pub(crate) fn service(
                 Some(p.id.clone()),
             )?;
             candidate.chat_id = p.chat_id.clone();
+            candidate.commit_subject = p.commit_subject.clone();
             let intended = root(app, &candidate)?.join(".codexprism/repair-intent");
             for (side, files) in [("before", &r.before), ("after", &r.after)] {
                 let dest = intended.join(side);
@@ -783,6 +798,56 @@ mod tests {
         .unwrap()
     }
     #[test]
+    fn commit_subject_uses_first_prompt_and_resets_after_keep_or_discard() {
+        let (_d, app, main) = fixture();
+        let p = begin(
+            &app,
+            &main.id,
+            Some("a"),
+            Some("  Clarify\n the proof ".into()),
+        )
+        .unwrap();
+        fs::write(root(&app, &p).unwrap().join("main.tex"), b"clarified").unwrap();
+        finish(&app, &p.id, false).unwrap();
+        let p = begin(&app, &main.id, Some("a"), Some("Make it shorter".into())).unwrap();
+        steer(&app, &main.id, "a", "Use fewer examples").unwrap();
+        finish(&app, &p.id, false).unwrap();
+        let p = load(&app, &p.id).unwrap();
+        assert_eq!(
+            p.commit_subject.as_deref(),
+            Some("docs(agent): Clarify the proof")
+        );
+        assert!(snapshot(&app, &p).unwrap().history_prompts.is_empty());
+        op(&app, &p, "apply");
+        let repo = git2::Repository::open(&main.root).unwrap();
+        let commit = repo.head().unwrap().peel_to_commit().unwrap();
+        let message = commit.message().unwrap();
+        assert_eq!(
+            message.lines().next(),
+            Some("docs(agent): Clarify the proof")
+        );
+        assert!(message.contains("main.tex:"));
+        assert!(!message.contains("User prompts:"));
+        let p = begin(&app, &main.id, Some("a"), Some("Update the results".into())).unwrap();
+        assert_eq!(
+            p.commit_subject.as_deref(),
+            Some("docs(agent): Update the results")
+        );
+        finish(&app, &p.id, false).unwrap();
+        op(&app, &load(&app, &p.id).unwrap(), "discard");
+        let p = begin(&app, &main.id, Some("a"), Some("Fix citations".into())).unwrap();
+        assert_eq!(
+            p.commit_subject.as_deref(),
+            Some("docs(agent): Fix citations")
+        );
+        // Old persisted proposals without this field still load and use diff-based subjects.
+        let mut value = serde_json::to_value(&p).unwrap();
+        value.as_object_mut().unwrap().remove("commitSubject");
+        let old: Proposal = serde_json::from_value(value).unwrap();
+        assert!(old.commit_subject.is_none());
+    }
+
+    #[test]
     fn independent_chats_merge_separate_regions_in_either_order() {
         for reverse in [false, true] {
             let (_d, app, main) = fixture();
@@ -872,11 +937,14 @@ mod tests {
     fn repair_keeps_original_and_preserves_a_later_acceptance() {
         let (_d, app, main) = fixture();
         let a = edit(&app, &main.id, "a", "main.tex", b"accepted");
-        let b = edit(&app, &main.id, "b", "main.tex", b"intended");
+        let mut b = edit(&app, &main.id, "b", "main.tex", b"intended");
+        b.commit_subject = workflow::prompt_subject("Explain the intended result");
+        save(&app, &b).unwrap();
         op(&app, &a, "apply");
         op(&app, &b, "apply");
         let repair = op(&app, &b, "repair");
         let candidate = load(&app, repair["proposalId"].as_str().unwrap()).unwrap();
+        assert_eq!(candidate.commit_subject, b.commit_subject);
         assert_eq!(snapshot(&app, &b).unwrap().after["main.tex"], b"intended");
         assert_eq!(
             snapshot(&app, &candidate).unwrap().before["main.tex"],
