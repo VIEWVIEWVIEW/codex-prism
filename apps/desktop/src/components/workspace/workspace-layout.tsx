@@ -182,7 +182,7 @@ export function WorkspaceLayout() {
   }
 
   return (
-    <div ref={workspaceRef} className="h-full">
+    <div ref={workspaceRef} className="flex h-full flex-col">
       <PanelGroup direction="horizontal" className="h-full">
         <Panel
           id="sidebar"

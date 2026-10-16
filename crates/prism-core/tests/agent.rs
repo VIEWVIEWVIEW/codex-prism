@@ -78,12 +78,21 @@ async fn agent_streams_approvals_and_persists_sessions_and_reviews() {
         .await
         .unwrap();
     event(&events, "turn/completed").await;
-    let review = backend.project_review(p.id.clone()).unwrap();
-    assert_eq!(review["active"], false);
+    let review = backend
+        .project_service(p.id.clone(), "proposal_list".into(), json!({}))
+        .await
+        .unwrap()[0]
+        .clone();
+    assert_eq!(review["state"], "ready");
     assert_eq!(review["changes"][0]["newContent"], "approved edit");
     assert!(backend.codex_respond(json!(900), json!({})).await.is_err());
     backend
-        .project_resolve_review(p.id.clone(), "main.tex".into(), true)
+        .project_service(
+            p.id.clone(),
+            "proposal_discard".into(),
+            json!({"proposalId":review["id"],"generation":review["generation"]}),
+        )
+        .await
         .unwrap();
     assert_eq!(
         fs::read_to_string(p.root.join("main.tex")).unwrap(),
@@ -133,11 +142,14 @@ async fn shutdown_stops_active_turn_and_reaps_process() {
         .unwrap()
         .status
         .success());
-    let review: Value = serde_json::from_slice(
-        &fs::read(dir.path().join(format!("data/review-{}.json", p.id))).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(review["active"], false);
+    let entries = fs::read_dir(dir.path().join("data/proposals")).unwrap();
+    let reviews: Vec<Value> = entries
+        .map(|e| {
+            serde_json::from_slice(&fs::read(e.unwrap().path().join("state.json")).unwrap())
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(reviews[0]["state"], "interrupted");
     assert!(backend.codex_status().await.is_err());
 }
 #[tokio::test]
@@ -209,13 +221,16 @@ async fn prompt_option_records_only_user_text_and_applies_to_future_turns() {
             .await
             .unwrap();
         event(&events, "turn/completed").await;
-        let review = backend.project_review(p.id.clone()).unwrap();
+        let review = backend
+            .project_service(p.id.clone(), "proposal_list".into(), json!({}))
+            .await
+            .unwrap()[0]
+            .clone();
         backend
-            .project_resolve_review_batch(
+            .project_service(
                 p.id.clone(),
-                vec!["main.tex".into()],
-                false,
-                review["revision"].as_str().map(str::to_owned),
+                "proposal_apply".into(),
+                json!({"proposalId":review["id"],"generation":review["generation"]}),
             )
             .await
             .unwrap();
@@ -228,5 +243,79 @@ async fn prompt_option_records_only_user_text_and_applies_to_future_turns() {
         assert_eq!(message.contains("Keep it short"), enabled);
         assert!(!message.contains("attachment body"));
         backend.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn two_chats_run_independently_with_steering_and_cancellation() {
+    let (dir, backend, p, events) = setup().await;
+    let a = send(&backend, &p.id, "running a").await.unwrap();
+    let b = send(&backend, &p.id, "running b").await.unwrap();
+    assert_ne!(a["threadId"], b["threadId"]);
+    assert_eq!(
+        fs::read_to_string(p.root.join("main.tex")).unwrap(),
+        "original"
+    );
+    let pending = backend
+        .project_service(p.id.clone(), "proposal_list".into(), json!({}))
+        .await
+        .unwrap();
+    assert_eq!(pending.as_array().unwrap().len(), 2);
+    assert!(pending
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|v| v["state"] == "running"));
+    backend
+        .codex_control(
+            p.id.clone(),
+            a["threadId"].as_str().unwrap().into(),
+            "turn-1".into(),
+            Some("only a".into()),
+        )
+        .await
+        .unwrap();
+    backend
+        .codex_control(
+            p.id.clone(),
+            a["threadId"].as_str().unwrap().into(),
+            "turn-1".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    event(&events, "turn/completed").await;
+    let pending = backend
+        .project_service(p.id.clone(), "proposal_list".into(), json!({}))
+        .await
+        .unwrap();
+    assert_eq!(
+        pending
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["threadId"] == a["threadId"])
+            .unwrap()["state"],
+        "interrupted"
+    );
+    assert_eq!(
+        pending
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["threadId"] == b["threadId"])
+            .unwrap()["state"],
+        "running"
+    );
+    backend.shutdown().await;
+    let requests = fs::read_to_string(dir.path().join("requests.jsonl")).unwrap();
+    let starts: Vec<Value> = requests
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v["method"] == "thread/start")
+        .collect();
+    assert_ne!(starts[0]["params"]["cwd"], starts[1]["params"]["cwd"]);
+    for start in starts {
+        assert_ne!(start["params"]["cwd"], json!(p.root));
     }
 }

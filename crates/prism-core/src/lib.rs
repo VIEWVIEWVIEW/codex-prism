@@ -5,15 +5,16 @@ mod codex;
 pub mod discovery;
 mod events;
 mod history;
-mod pdf_export;
 pub mod latex;
+mod pdf_export;
 pub mod projects;
+pub mod proposals;
 mod review_storage;
-mod visual_review;
 mod services;
 pub mod skills;
 pub mod templates;
 pub mod uv;
+mod visual_review;
 pub use events::{BackendEvent, EventSink, NoopEventSink, RecordingEventSink};
 
 use std::{
@@ -119,6 +120,7 @@ impl Backend {
             }),
         };
         codex::recover(&backend);
+        proposals::recover(&backend);
         Ok(backend)
     }
     pub(crate) fn enter(&self) -> Result<OperationGuard, String> {

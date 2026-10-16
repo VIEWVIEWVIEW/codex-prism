@@ -6,6 +6,7 @@ import { loadReviewDiff } from "@/lib/review-diff-client";
 import { reviewDiff } from "@/lib/review-diff";
 const { state } = vi.hoisted(() => ({
   state: {
+    proposals: [],
     review: {
       active: false,
       changes: [
@@ -23,7 +24,8 @@ const { state } = vi.hoisted(() => ({
   },
 }));
 vi.mock("@/stores/agent-chat-store", () => ({
-  useAgentChatStore: (select: any) => select(state),
+  activeProposal: () => undefined,
+  useAgentChatStore: (select: any = (s: any) => s) => select(state),
 }));
 vi.mock("@/lib/review-diff-client", () => ({
   loadReviewDiff: vi.fn(async (before: string, after: string) =>

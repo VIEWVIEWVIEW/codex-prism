@@ -66,7 +66,7 @@ pub(crate) fn review_path(app: &crate::Backend, id: &str) -> Result<std::path::P
     Ok(projects::data_dir(app)?.join(format!("review-{id}.json")))
 }
 pub(crate) fn assert_unlocked(app: &crate::Backend, id: &str) -> Result<(), String> {
-    if review_path(app, id)?.exists() {
+    if review_path(app, id)?.exists() || crate::proposals::locked(app, id)? {
         return Err("Project is locked by an agent turn or pending review".into());
     }
     Ok(())
@@ -250,6 +250,12 @@ async fn connection(app: &crate::Backend) -> Result<Arc<Connection>, String> {
                         if let Some(thread) = v["params"]["threadId"].as_str() {
                             if let Ok(all) = sessions(&worker) {
                                 if let Some(s) = all.iter().find(|s| s.id == thread) {
+                                    let _ = crate::proposals::finish_turn(
+                                        &worker,
+                                        &s.project_id,
+                                        &s.id,
+                                        v["params"]["turn"]["id"].as_str(),
+                                    );
                                     let _ = finish_review(&worker, &s.project_id);
                                 }
                             }
@@ -273,6 +279,7 @@ async fn connection(app: &crate::Backend) -> Result<Arc<Connection>, String> {
         let state = &handle.inner.codex;
         if let Ok(all) = sessions(&handle) {
             for s in all {
+                let _ = crate::proposals::finish_thread(&handle, &s.project_id, &s.id, true);
                 let _ = finish_review(&handle, &s.project_id);
             }
         }
@@ -307,6 +314,7 @@ async fn connection(app: &crate::Backend) -> Result<Arc<Connection>, String> {
     Ok(c)
 }
 // Reserve the project and durably retain the previous review until turn/start succeeds.
+#[cfg(test)]
 fn prepare_review(
     id: String,
     previous: Option<Review>,
@@ -361,28 +369,9 @@ pub(crate) fn history_baseline(
     Ok(inputs)
 }
 fn history_before_turn(app: &crate::Backend, id: &str) -> Result<(), String> {
-    let mut inputs = {
-        let _files = app.inner.projects.0.lock().map_err(|e| e.to_string())?;
-        history_baseline(app, id)?
-    };
-    let root = projects::get(app, id)?.root.to_string_lossy().to_string();
-    let had_ignore = std::path::Path::new(&root).join(".gitignore").exists();
-    crate::history::workflow::initialize(&root, Some(inputs.clone()))?;
-    if !had_ignore {
-        if let Ok(bytes) = std::fs::read(std::path::Path::new(&root).join(".gitignore")) {
-            let _files = app.inner.projects.0.lock().map_err(|e| e.to_string())?;
-            let path = review_path(app, id)?;
-            let mut review = crate::review_storage::load(&path)?;
-            inputs.insert(".gitignore".into(), bytes.clone());
-            review.before.insert(".gitignore".into(), bytes);
-            crate::review_storage::save(&path, &review)?;
-        }
-    }
-    crate::history::workflow::checkpoint(
-        &root,
-        "docs(history): checkpoint before agent turn",
-        Some(inputs),
-    )?;
+    let root = projects::get(app, id)?.root;
+    let inputs = projects::isolated_snapshot(&root)?;
+    crate::history::workflow::initialize(&root.to_string_lossy(), Some(inputs))?;
     Ok(())
 }
 fn acceptance_id(r: &Review, paths: &[String]) -> String {
@@ -728,83 +717,92 @@ pub(crate) async fn codex_send(
     main_document: Option<String>,
     history_prompt: Option<String>,
 ) -> Result<Value, String> {
+    codex_send_for_chat(
+        app,
+        project_id,
+        thread_id,
+        prompt,
+        model,
+        effort,
+        images,
+        main_document,
+        history_prompt,
+        None,
+    )
+    .await
+}
+pub(crate) async fn codex_send_for_chat(
+    app: crate::Backend,
+    project_id: String,
+    thread_id: Option<String>,
+    prompt: String,
+    model: Option<String>,
+    effort: Option<String>,
+    images: Option<Vec<String>>,
+    main_document: Option<String>,
+    history_prompt: Option<String>,
+    chat_id: Option<String>,
+) -> Result<Value, String> {
     let project = projects::get(&app, &project_id)?;
+    if review_path(&app, &project_id)?.exists() {
+        return Err(
+            "Resolve the legacy project review before starting concurrent proposals".into(),
+        );
+    }
     let c = connection(&app).await?;
-    {
-        let state = &app.inner.codex;
-        let _services = state.service_lock.lock().await;
-        let worker = app.clone();
-        let worker_id = project_id.clone();
-        let root = project.root.clone();
-        let history_prompt = history_prompt.clone();
-        let admitted = app.enter()?;
-        tokio::task::spawn_blocking(move || -> Result<(), String> {
-            let _operation = admitted;
-            history_result(&worker, &worker_id, settle_implicit_history(&worker, &worker_id));
-            let projects = &worker.inner.projects;
-            let _files = projects.0.lock().map_err(|e| e.to_string())?;
-            let state = &worker.inner.codex;
-            let _guard = state.reviews.lock().map_err(|e| e.to_string())?;
-            let path = review_path(&worker, &worker_id)?;
-            let previous = if path.exists() {
-                Some(crate::review_storage::load(&path)?)
-            } else {
-                None
-            };
-            let inputs = projects::snapshot(&root)?;
-            if let Some(previous) = &previous {
-                for name in previous.before.keys().chain(previous.after.keys()) {
-                    if previous.before.get(name) != previous.after.get(name) && inputs.get(name) != previous.after.get(name) && !crate::history::workflow::untracked_output(&root.to_string_lossy(), name) {
-                        return Err(format!("File changed on disk: {name}. Reload the review before starting another turn."));
-                    }
-                }
-            }
-            let mut r = prepare_review(worker_id.clone(), previous, inputs)?;
-            if crate::history::workflow::include_prompt(&root.to_string_lossy()) {
-                if let Some(prompt) = history_prompt {
-                    r.history_prompts.push(prompt);
-                }
-            }
-            crate::review_storage::save(&review_path(&worker, &worker_id)?, &r)?;
-            Ok(())
-        })
-        .await
-        .map_err(|e| e.to_string())??;
+    // Serialize only startup/binding. Running turns are reserved per proposal.
+    let _startup = app.inner.codex.service_lock.lock().await;
+    if let Some(id) = &thread_id {
+        if !sessions(&app)?
+            .iter()
+            .any(|s| s.id == *id && s.project_id == project_id)
+        {
+            return Err("Unknown project session".into());
+        }
     }
-    // The reservation is durable; Git work uses immutable inputs outside project locks.
-    let worker = app.clone();
-    let id = project_id.clone();
-    let _ = tokio::task::spawn_blocking(move || {
-        let result = history_before_turn(&worker, &id);
-        history_result(&worker, &id, result);
-    })
-    .await;
-    if let Some(main) = main_document {
-        crate::visual_review::prepare(&app, &project_id, &main).await;
-    }
+    history_result(&app, &project_id, history_before_turn(&app, &project_id));
+    let mut proposal = crate::proposals::begin_for_chat(
+        &app,
+        &project_id,
+        thread_id.as_deref(),
+        history_prompt,
+        chat_id.clone(),
+    )?;
+    let workspace = crate::proposals::root(&app, &proposal)?;
+    let prompt = prompt.replace(&project.root.to_string_lossy().to_string(), ".");
+    let _ = main_document;
     let _ = app.emit_review(json!({"projectId":project_id}));
-    let result: Result<Value,String>=async{
- let mut config=json!({"cwd":project.root,"approvalPolicy":"on-request","approvalsReviewer":"user","sandbox":"workspace-write","config":{"sandbox_workspace_write.network_access":false},"developerInstructions":concat!("You are the scientific writing assistant in codex-prism, a LaTeX editor.\n\n", include_str!("writing-guidance.txt"))});
- if let Some(m)=model.filter(|s|!s.is_empty()){config["model"]=json!(m)}
- let thread=if let Some(id)=thread_id {if !sessions(&app)?.iter().any(|s|s.id==id && s.project_id==project_id){return Err("Unknown project session".into())}config["threadId"]=json!(id);c.call("thread/resume",config).await?}else{c.call("thread/start",config).await?};
- let id=thread["thread"]["id"].as_str().ok_or("Missing thread ID")?.to_string();
- {let state=&app.inner.codex;let _guard=state.reviews.lock().map_err(|e|e.to_string())?;let mut all=sessions(&app)?;if !all.iter().any(|s|s.id==id){all.push(Session{project_id:project_id.clone(),id:id.clone(),title:prompt.chars().take(70).collect()});save_json(&projects::data_dir(&app)?.join("sessions.json"),&all)?;}}
- let _=app.emit_agent(json!({"method":"prism/session","params":{"projectId":project_id,"threadId":id}}));
- let mut input=vec![json!({"type":"text","text":prompt})];for url in images.unwrap_or_default(){input.push(json!({"type":"image","imageUrl":url}));}let mut params=json!({"threadId":id,"input":input});if let Some(e)=effort.filter(|s|!s.is_empty()){params["effort"]=json!(e)}
- let turn=c.call("turn/start",params).await?;confirm_review_start(&app, &project_id)?;Ok(json!({"threadId":id,"turn":turn["turn"]}))
- }.await;
+    let result: Result<Value, String> = async {
+        let mut config = json!({"cwd":workspace,"approvalPolicy":"on-request","approvalsReviewer":"user","sandbox":"workspace-write","config":{"sandbox_workspace_write.network_access":false,"sandbox_workspace_write.writable_roots":[],"sandbox_workspace_write.exclude_tmpdir_env_var":false,"sandbox_workspace_write.exclude_slash_tmp":false},"developerInstructions":concat!("You are the scientific writing assistant in codex-prism. This is an isolated proposal workspace. It may have been refreshed from the latest main document since your previous turn: inspect current files before editing. Keep project edits in this workspace. Temporary files may use /tmp and TMPDIR. Commands requiring unrestricted execution may request user approval. Project changes require user acceptance.\n\n",include_str!("writing-guidance.txt"))});
+        if let Some(m) = model.filter(|s| !s.is_empty()) { config["model"] = json!(m); }
+        let thread = if let Some(id) = thread_id { config["threadId"] = json!(id); c.call("thread/resume", config).await? } else { c.call("thread/start", config).await? };
+        let id = thread["thread"]["id"].as_str().ok_or("Missing thread ID")?.to_string();
+        crate::proposals::bind(&app, &mut proposal, id.clone())?;
+        { let _guard = app.inner.codex.reviews.lock().map_err(|e|e.to_string())?;
+          let mut all = sessions(&app)?;
+          if !all.iter().any(|s|s.id==id) { all.push(Session { project_id:project_id.clone(), id:id.clone(), title:prompt.chars().take(70).collect() }); save_json(&projects::data_dir(&app)?.join("sessions.json"), &all)?; }
+        }
+        let _ = app.emit_agent(json!({"method":"prism/session","params":{"projectId":project_id,"threadId":id,"chatId":chat_id,"proposalId":proposal.id}}));
+        let mut input = vec![json!({"type":"text","text":prompt})];
+        for url in images.unwrap_or_default() { input.push(json!({"type":"image","imageUrl":url})); }
+        let mut params = json!({"threadId":id,"cwd":workspace,"sandboxPolicy":{"type":"workspaceWrite","writableRoots":[workspace],"networkAccess":false,"excludeTmpdirEnvVar":false,"excludeSlashTmp":false},"input":input});
+        if let Some(e) = effort.filter(|s|!s.is_empty()) { params["effort"] = json!(e); }
+        let turn = c.call("turn/start", params).await?;
+        if let Some(id) = turn["turn"]["id"].as_str() { crate::proposals::set_turn(&app, &proposal.id, id)?; }
+        Ok(json!({"threadId":id,"turn":turn["turn"],"proposalId":proposal.id}))
+    }.await;
     if let Err(ref error) = result {
-        // A transport failure can leave an accepted turn running. Stop the process before unlocking files.
         if error.contains("timed out")
             || error.contains("disconnected")
             || error.contains("process exited")
         {
             let _ = c.stop().await;
         }
-        let _ = finish_review(&app, &project_id);
+        let _ = crate::proposals::finish(&app, &proposal.id, true);
     }
     result
 }
+
 pub(crate) async fn codex_control(
     app: crate::Backend,
     project_id: String,
@@ -820,6 +818,8 @@ pub(crate) async fn codex_control(
     }
     let c = connection(&app).await?;
     if let Some(text) = prompt {
+        let project = projects::get(&app, &project_id)?;
+        let text = text.replace(&project.root.to_string_lossy().to_string(), ".");
         let history_id = {
             let _files = app.inner.projects.0.lock().map_err(|e| e.to_string())?;
             crate::review_storage::load(&review_path(&app, &project_id)?)
@@ -828,6 +828,7 @@ pub(crate) async fn codex_control(
                 .map(|r| r.history_id)
         };
         let result = c.call("turn/steer",json!({"threadId":thread_id,"expectedTurnId":turn_id,"input":[{"type":"text","text":text}]})).await?;
+        crate::proposals::steer(&app, &project_id, &thread_id, &text)?;
         if let Some(history_id) = history_id {
             let _files = app.inner.projects.0.lock().map_err(|e| e.to_string())?;
             let path = review_path(&app, &project_id)?;
@@ -842,6 +843,7 @@ pub(crate) async fn codex_control(
         }
         Ok(result)
     } else {
+        crate::proposals::cancel_thread(&app, &project_id, &thread_id)?;
         c.call(
             "turn/interrupt",
             json!({"threadId":thread_id,"turnId":turn_id}),
@@ -855,14 +857,108 @@ pub(crate) async fn codex_respond(
     result: Value,
 ) -> Result<(), String> {
     let c = connection(&app).await?;
-    let pending = c
+    let request = c
         .requests
         .lock()
         .map_err(|e| e.to_string())?
-        .remove(&id.to_string());
-    if pending.is_none() {
-        return Err("Request already resolved".into());
+        .get(&id.to_string())
+        .cloned()
+        .ok_or("Request already resolved")?;
+    let params = &request["params"];
+    if let Some(thread) = params["threadId"].as_str() {
+        if let Some(session) = sessions(&app)?.iter().find(|s| s.id == thread) {
+            if let Some(proposal) = crate::proposals::all(&app, &session.project_id)?
+                .into_iter()
+                .find(|p| {
+                    p.thread_id.as_deref() == Some(thread)
+                        && ["running", "repairing"].contains(&p.state.as_str())
+                })
+            {
+                let workspace = crate::proposals::root(&app, &proposal)?;
+                if request["method"] == "item/permissions/requestApproval" {
+                    // Only grant explicitly scoped writes inside the owning workspace.
+                    let permissions = &result["permissions"];
+                    if result["scope"] != "turn" {
+                        return Err(
+                            "Proposal permissions must be limited to the current turn".into()
+                        );
+                    }
+                    if permissions
+                        .as_object()
+                        .ok_or("Invalid permissions")?
+                        .keys()
+                        .any(|key| {
+                            !["network", "fileSystem", "file_system"].contains(&key.as_str())
+                        })
+                    {
+                        return Err(
+                            "Unsupported permission expansion for an isolated proposal".into()
+                        );
+                    }
+                    if let Some(fs) = permissions
+                        .get("fileSystem")
+                        .or_else(|| permissions.get("file_system"))
+                    {
+                        if fs
+                            .as_object()
+                            .ok_or("Invalid filesystem permissions")?
+                            .keys()
+                            .any(|key| !["read", "write", "writableRoots"].contains(&key.as_str()))
+                        {
+                            return Err("Unsupported filesystem permission expansion for an isolated proposal".into());
+                        }
+                        let writes = fs.get("write").or_else(|| fs.get("writableRoots"));
+                        if let Some(writes) = writes {
+                            let paths = writes.as_array().ok_or(
+                                "Unscoped filesystem permissions are not allowed for proposals",
+                            )?;
+                            for path in paths {
+                                let path = std::path::Path::new(
+                                    path.as_str().ok_or("Invalid permission path")?,
+                                );
+                                let rel = path.strip_prefix(&workspace).map_err(|_| {
+                                    "Proposal agents cannot write outside their workspace"
+                                })?;
+                                if !rel.as_os_str().is_empty() {
+                                    projects::resolve(
+                                        &workspace,
+                                        rel.to_str().ok_or("Invalid permission path")?,
+                                    )?;
+                                }
+                            }
+                        }
+                    }
+                }
+                if !result["decision"].is_null() && !result["decision"].is_string() {
+                    return Err(
+                        "Persistent approval amendments are unavailable in isolated proposals"
+                            .into(),
+                    );
+                }
+                if result["decision"]
+                    .as_str()
+                    .is_some_and(|d| d.starts_with("accept"))
+                {
+                    if let Some(grant) = params["grantRoot"].as_str() {
+                        let path = std::path::Path::new(grant);
+                        let rel = path
+                            .strip_prefix(&workspace)
+                            .map_err(|_| "Proposal agents cannot write outside their workspace")?;
+                        if !rel.as_os_str().is_empty() {
+                            projects::resolve(
+                                &workspace,
+                                rel.to_str().ok_or("Invalid permission path")?,
+                            )?;
+                        }
+                    }
+                }
+            }
+        }
     }
+    c.requests
+        .lock()
+        .map_err(|e| e.to_string())?
+        .remove(&id.to_string());
     c.write(json!({"id":id,"result":result})).await
 }
 pub(crate) fn project_review(app: crate::Backend, project_id: String) -> Result<Value, String> {
@@ -1141,6 +1237,11 @@ pub(crate) async fn shutdown(app: &crate::Backend) {
     if let Some(c) = connection {
         let turns = c.turns.lock().map(|t| t.clone()).unwrap_or_default();
         for (thread, turn) in turns {
+            if let Ok(all) = sessions(app) {
+                if let Some(s) = all.iter().find(|s| s.id == thread) {
+                    let _ = crate::proposals::cancel_thread(app, &s.project_id, &thread);
+                }
+            }
             let _ = tokio::time::timeout(
                 Duration::from_secs(2),
                 c.call("turn/interrupt", json!({"threadId":thread,"turnId":turn})),
@@ -1150,6 +1251,7 @@ pub(crate) async fn shutdown(app: &crate::Backend) {
         let _ = c.stop().await;
         if let Ok(all) = sessions(app) {
             for s in all {
+                let _ = crate::proposals::finish_thread(app, &s.project_id, &s.id, true);
                 let _ = finish_review(app, &s.project_id);
             }
         }
@@ -1570,9 +1672,13 @@ mod tests {
         lock_task.await.unwrap();
         assert!(response.unwrap().is_ok());
         app.shutdown().await;
-        let review = project_review(app.clone(), project.id).unwrap();
-        assert_eq!(review["active"], false);
-        assert_eq!(review["changes"][0]["newContent"], "running edit");
+        let review =
+            crate::proposals::service(&app, &project.id, "proposal_list", json!({})).unwrap();
+        assert_eq!(review[0]["changes"][0]["newContent"], "running edit");
+        assert_eq!(
+            std::fs::read_to_string(root.join("main.tex")).unwrap(),
+            "original"
+        );
     }
 
     #[cfg(unix)]

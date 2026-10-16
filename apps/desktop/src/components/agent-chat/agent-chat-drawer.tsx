@@ -69,7 +69,11 @@ export function AgentChatDrawer({
     error: useAgentChatStore((state) => state.error),
     isStreaming: useAgentChatStore((state) => state.isStreaming),
     locked: useAgentChatStore((state) => state.locked),
-    pendingAttachments: useAgentChatStore((state) => state.pendingAttachments),
+    pendingAttachments: useAgentChatStore(
+      (state) => state.pendingAttachments,
+    ).filter(
+      (a) => !a.chatId || a.chatId === useAgentChatStore.getState().activeTabId,
+    ),
     projectId: useAgentChatStore((state) => state.projectId),
     requestPinnedContextRemoval: useAgentChatStore(
       (state) => state.requestPinnedContextRemoval,
@@ -112,6 +116,7 @@ export function AgentChatDrawer({
     setInputHeight(Math.max(56, Math.min(height, Math.max(56, available))));
   };
   const files = useDocumentStore((d) => d.files);
+  const proposals = useAgentChatStore((state) => state.proposals);
   const t = s.tabs.find((t) => t.id === s.activeTabId)!;
   const reportError = (e: unknown) =>
     useAgentChatStore.setState({ error: String(e) });
@@ -155,10 +160,10 @@ export function AgentChatDrawer({
   const model =
     setup.models.find((m) => m.model === s.selectedModel) ||
     setup.models.find((m) => m.isDefault);
-  const pendingReview = s.pendingReview;
+
   const canSend =
     !!t.draft.trim() &&
-    (t.isStreaming || !s.locked || pendingReview) &&
+    !s.pendingReview &&
     setup.status === "ready" &&
     !attaching;
   const setDraft = (draft: string) =>
@@ -305,7 +310,16 @@ export function AgentChatDrawer({
                     void s.resumeSession(x.id, x.title).catch(reportError);
                   }}
                 >
-                  <span className="truncate">{x.title}</span>
+                  <span className="truncate">
+                    {x.title}{" "}
+                    {proposals.find(
+                      (p) => p.threadId === x.id && p.state !== "original",
+                    )?.state === "conflicts"
+                      ? " · Conflicts"
+                      : proposals.some((p) => p.threadId === x.id)
+                        ? " · Changes ready"
+                        : ""}
+                  </span>
                 </DropdownMenuItem>
               ))
             ) : (
@@ -373,7 +387,23 @@ export function AgentChatDrawer({
                     className="truncate"
                     onClick={() => s.setActiveTab(x.id)}
                   >
-                    {x.title}
+                    {x.title}{" "}
+                    {proposals.find(
+                      (p) =>
+                        p.threadId === x.sessionId && p.state !== "original",
+                    )?.state === "conflicts"
+                      ? " · Conflicts"
+                      : proposals.some(
+                            (p) =>
+                              p.threadId === x.sessionId &&
+                              p.state === "repairing",
+                          )
+                        ? " · Repairing"
+                        : x.isStreaming
+                          ? " · Running"
+                          : proposals.some((p) => p.threadId === x.sessionId)
+                            ? " · Changes ready"
+                            : ""}
                   </button>
                   <Button
                     variant="ghost"
@@ -521,17 +551,27 @@ export function AgentChatDrawer({
                 placeholder={
                   t.isStreaming
                     ? "Guide the current turn…"
-                    : s.locked && !pendingReview
-                      ? "Wait for the current turn…"
+                    : s.pendingReview
+                      ? "Resolve the legacy review…"
                       : "Ask Codex anything about your project…"
                 }
                 value={t.draft}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.nativeEvent.isComposing) return;
-                  if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                  if (
+                    e.key === "Enter" &&
+                    e.shiftKey &&
+                    !e.ctrlKey &&
+                    !e.metaKey &&
+                    !e.altKey
+                  ) {
                     const field = e.currentTarget;
-                    const edit = listContinuation(field.value, field.selectionStart, field.selectionEnd);
+                    const edit = listContinuation(
+                      field.value,
+                      field.selectionStart,
+                      field.selectionEnd,
+                    );
                     if (edit) {
                       e.preventDefault();
                       field.setRangeText(edit.text, edit.from, edit.to, "end");
@@ -704,8 +744,8 @@ export function AgentChatDrawer({
               <span>
                 {attaching ? (
                   "Adding files…"
-                ) : pendingReview ? (
-                  "Sending keeps pending changes"
+                ) : s.pendingReview ? (
+                  "Resolve the legacy review before sending"
                 ) : s.locked ? (
                   "Project editing paused during execution"
                 ) : setup.status !== "ready" ? (
@@ -797,7 +837,8 @@ function Request({ event: e }: { event: AgentEvent }) {
           .join("\n") || "Codex needs your permission to continue."}
       </pre>
       <p className="text-xs">
-        Changes outside the project are not covered by project Undo.
+        Project edits belong in this chat’s proposal workspace. Approved
+        unrestricted commands can access files outside it.
       </p>
       {approval ? (
         <>

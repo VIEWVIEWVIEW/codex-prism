@@ -170,6 +170,33 @@ impl Backend {
         )
         .await
     }
+    pub async fn codex_send_for_chat(
+        &self,
+        project_id: String,
+        thread_id: Option<String>,
+        prompt: String,
+        model: Option<String>,
+        effort: Option<String>,
+        images: Option<Vec<String>>,
+        main_document: Option<String>,
+        history_prompt: Option<String>,
+        chat_id: Option<String>,
+    ) -> Result<Value, String> {
+        let _operation = self.enter()?;
+        codex::codex_send_for_chat(
+            self.clone(),
+            project_id,
+            thread_id,
+            prompt,
+            model,
+            effort,
+            images,
+            main_document,
+            history_prompt,
+            chat_id,
+        )
+        .await
+    }
     pub async fn codex_control(
         &self,
         project_id: String,
@@ -220,6 +247,47 @@ impl Backend {
         .map_err(|e| e.to_string())?
     }
 
+    pub async fn proposal_list(
+        &self,
+        project_id: String,
+    ) -> Result<Vec<crate::proposals::ProposalSummary>, String> {
+        serde_json::from_value(
+            self.project_service(project_id, "proposal_list".into(), serde_json::json!({}))
+                .await?,
+        )
+        .map_err(|e| e.to_string())
+    }
+    pub async fn proposal_apply(
+        &self,
+        request: crate::proposals::ProposalRequest,
+    ) -> Result<crate::proposals::ApplyOutcome, String> {
+        let args = serde_json::to_value(&request).map_err(|e| e.to_string())?;
+        serde_json::from_value(
+            self.project_service(request.project_id, "proposal_apply".into(), args)
+                .await?,
+        )
+        .map_err(|e| e.to_string())
+    }
+    pub async fn proposal_discard(
+        &self,
+        request: crate::proposals::ProposalRequest,
+    ) -> Result<(), String> {
+        let args = serde_json::to_value(&request).map_err(|e| e.to_string())?;
+        self.project_service(request.project_id, "proposal_discard".into(), args)
+            .await?;
+        Ok(())
+    }
+    pub async fn proposal_repair(
+        &self,
+        request: crate::proposals::ProposalRequest,
+    ) -> Result<crate::proposals::RepairOutcome, String> {
+        let args = serde_json::to_value(&request).map_err(|e| e.to_string())?;
+        serde_json::from_value(
+            self.project_service(request.project_id, "proposal_repair".into(), args)
+                .await?,
+        )
+        .map_err(|e| e.to_string())
+    }
     pub async fn project_service(
         &self,
         project_id: String,

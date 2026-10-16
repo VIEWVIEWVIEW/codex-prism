@@ -1,3 +1,4 @@
+import { activeProposal } from "@/stores/agent-chat-store";
 import { readProjectBytes } from "@/lib/tauri/fs";
 import { getPdfArrayBuffer } from "@/lib/mupdf/pdf-data";
 import { useCallback, useEffect, useRef, useState, useMemo } from "react";
@@ -389,6 +390,10 @@ export function LatexEditor() {
 
   // Compile: save all files first, then compile via Tauri command
   compileRef.current = async () => {
+    if (activeProposal(useAgentChatStore.getState())) {
+      window.dispatchEvent(new Event("compile-chat-pdf"));
+      return;
+    }
     const state = useDocumentStore.getState();
     if (!projectRoot || activeFile?.type !== "tex") return;
     if (state.isCompiling) {

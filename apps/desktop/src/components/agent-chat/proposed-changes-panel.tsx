@@ -1,12 +1,124 @@
+import { PendingChatWork } from "../workspace/proposal-preview";
 import { useEffect, useRef, useState } from "react";
 import { ChevronDownIcon } from "lucide-react";
-import { useAgentChatStore } from "@/stores/agent-chat-store";
-import type { ReviewChange } from "@/lib/backend";
+import { activeProposal, useAgentChatStore } from "@/stores/agent-chat-store";
+import { proposals, type ReviewChange } from "@/lib/backend";
 import type { ReviewDiffLine } from "@/lib/review-diff";
 import { loadReviewDiff } from "@/lib/review-diff-client";
 import { cn } from "@/lib/utils";
 
 export function ProposedChangesPanel() {
+  const state = useAgentChatStore();
+  const proposal = activeProposal(state);
+  return (
+    <>
+      {" "}
+      <PendingChatWork />
+      {proposal ? <ProposalReview /> : <LegacyChangesPanel />}
+    </>
+  );
+}
+function ProposalReview() {
+  const state = useAgentChatStore();
+  const p = activeProposal(state)!;
+  const [busy, setBusy] = useState(false);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const running = ["running", "repairing", "applying"].includes(p.state);
+  const decide = async (action: "apply" | "discard" | "repair") => {
+    setBusy(true);
+    try {
+      await state.decideProposal(action);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section
+      aria-label="Review chat proposal"
+      className="max-h-72 overflow-auto border-t p-3 text-xs"
+    >
+      <div className="flex gap-3">
+        <strong>
+          {p.state === "conflicts"
+            ? "Conflicts"
+            : p.state === "repairing"
+              ? "Repairing"
+              : running
+                ? "Running"
+                : p.state === "interrupted"
+                  ? "Interrupted — captured edits retained"
+                  : "Changes ready"}
+        </strong>
+        <span>{p.changes.length} changed files</span>
+        <button
+          type="button"
+          disabled={busy || running || p.state === "invalid"}
+          onClick={() => decide("apply")}
+          title="Keep all changes from this chat"
+          className="rounded-full bg-green-600 px-3 py-1 font-medium text-white hover:bg-green-700 focus-visible:outline focus-visible:outline-ring disabled:opacity-50"
+        >
+          {busy ? "…" : "Keep"}
+        </button>
+        <button
+          type="button"
+          disabled={busy || running}
+          onClick={() => decide("discard")}
+        >
+          Discard changes
+        </button>
+        {p.conflicts.length > 0 && (
+          <button
+            type="button"
+            disabled={busy || running}
+            onClick={() => decide("repair")}
+          >
+            Fix with agent
+          </button>
+        )}
+      </div>
+      {p.conflicts.length > 0 && (
+        <p role="alert">
+          Conflicting files: {p.conflicts.join(", ")}. Main document was not
+          changed.
+        </p>
+      )}
+      {p.error && <p role="alert">{p.error}. Captured files are retained.</p>}
+      {p.state === "applying" && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await proposals.operate(p, "recover");
+              await state.refreshReview();
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Retry interrupted application
+        </button>
+      )}
+      {state.error && <p role="alert">{state.error}</p>}
+      {p.changes.map((change) => (
+        <FileReview
+          key={change.path}
+          change={change}
+          expanded={expanded === change.path}
+          toggle={() =>
+            setExpanded(expanded === change.path ? null : change.path)
+          }
+          disabled={busy || running}
+          pending={false}
+          decide={async () => {}}
+          showActions={false}
+        />
+      ))}
+    </section>
+  );
+}
+function LegacyChangesPanel() {
   const review = useAgentChatStore((s) => s.review);
   const error = useAgentChatStore((s) => s.error);
   const reload = useAgentChatStore((s) => s.reloadReview);

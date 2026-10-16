@@ -1,3 +1,7 @@
+import { useChatPdf, safeChatSource } from "@/hooks/use-chat-pdf";
+import { ProposalReport } from "../proposal-preview";
+import { usePdfNavigationStore } from "@/stores/pdf-navigation-store";
+import { toast } from "sonner";
 import { useVisualReview } from "@/hooks/use-visual-review";
 import { VisualReviewPanel } from "./visual-review-panel";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
@@ -19,7 +23,6 @@ import {
 import { backend } from "@/lib/backend";
 import {
   useDocumentStore,
-  getPdfBytes,
   getCurrentPdfBytes,
   getCurrentPdfRootId,
   hasPdfData,
@@ -101,8 +104,8 @@ export function PdfPreview() {
   const contentGeneration = useDocumentStore((s) => s.contentGeneration);
   const agentActive = useAgentChatStore((s) => s.review.active);
   const pdfRevision = useDocumentStore((s) => s.pdfRevision);
-  const compileError = useDocumentStore((s) => s.compileError);
-  const isCompiling = useDocumentStore((s) => s.isCompiling);
+  const mainCompileError = useDocumentStore((s) => s.compileError);
+  const mainIsCompiling = useDocumentStore((s) => s.isCompiling);
   const isSaving = useDocumentStore((s) => s.isSaving);
   const setPdfData = useDocumentStore((s) => s.setPdfData);
   const setCompileError = useDocumentStore((s) => s.setCompileError);
@@ -150,16 +153,35 @@ export function PdfPreview() {
   const initialized = useDocumentStore((s) => s.initialized);
 
   // Derive pdfData from external cache, re-read whenever pdfRevision bumps
-  const pdfData = useMemo(() => getCurrentPdfBytes(), [pdfRevision]); // eslint-disable-line react-hooks/exhaustive-deps
+  const mainPdfData = useMemo(() => getCurrentPdfBytes(), [pdfRevision]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep-alive: track which root files have PdfViewer instances alive (LRU order)
-  const currentRootFileId =
+  const sourceRootFileId =
     activeFile?.type === "tex"
       ? resolveTexRoot(activeFile.id, files)
       : (getCurrentPdfRootId() ?? resolveTexRoot(activeFile?.id ?? "", files));
-  const visual = useVisualReview(
-    files.find((f) => f.id === currentRootFileId)?.relativePath,
-  );
+  const mainFile = files.find((f) => f.id === sourceRootFileId)?.relativePath;
+  const chatPdf = useChatPdf(mainFile);
+  const artifact = chatPdf.artifact;
+  const artifactRef = useRef(artifact);
+  artifactRef.current = artifact;
+  const pdfData = artifact?.bytes ?? mainPdfData;
+  const compileError = chatPdf.proposal ? chatPdf.error : mainCompileError;
+  const isCompiling = chatPdf.proposal ? chatPdf.busy : mainIsCompiling;
+  const currentRootFileId = JSON.stringify([
+    projectRoot,
+    artifact?.proposal.id ?? "main",
+    sourceRootFileId,
+  ]);
+  const viewerData = useRef(new Map<string, Uint8Array>());
+  if (pdfData) viewerData.current.set(currentRootFileId, pdfData);
+  const visual = useVisualReview(mainFile, !chatPdf.proposal);
+  useEffect(() => {
+    setPdfError(null);
+    setPdfSelection(null);
+    setResolvedSource(null);
+    setCaptureMode(false);
+  }, [currentRootFileId, chatPdf.key]);
   const [reviewPanelOpen, setReviewPanelOpen] = useState(true);
   const selectChange = (id: string) => {
     visual.setSelected(id);
@@ -226,6 +248,12 @@ export function PdfPreview() {
       return [currentRootFileId, ...without].slice(0, MAX_ALIVE_VIEWERS);
     });
   }, [currentRootFileId, pdfData, visual.active]);
+  useEffect(() => {
+    for (const key of viewerData.current.keys()) {
+      if (!aliveOrder.includes(key) && key !== currentRootFileId)
+        viewerData.current.delete(key);
+    }
+  }, [aliveOrder, currentRootFileId]);
 
   // PDF text selection toolbar
   const [pdfSelection, setPdfSelection] = useState<PdfTextSelection | null>(
@@ -233,10 +261,10 @@ export function PdfPreview() {
   );
   const previewContainerRef = useRef<HTMLDivElement>(null);
 
-  const sourceLocation = usePdfSourceNavigation({
+  const mainSourceLocation = usePdfSourceNavigation({
     projectRoot,
     projectId: useDocumentStore((state) => state.projectId),
-    mainFile: files.find((file) => file.id === currentRootFileId)?.relativePath,
+    mainFile,
     activeFilePath: activeFile?.relativePath,
     data: visual.active
       ? visual.bytes.current
@@ -244,11 +272,54 @@ export function PdfPreview() {
         ? getPdfArrayBuffer(pdfData)
         : null,
     artifactId: visual.active ? visual.metadata.after : undefined,
-    enabled: !isCompiling && !compileError,
+    enabled: !artifact && !isCompiling && !compileError,
   });
+
+  const navigation = usePdfNavigationStore((s) => s.request);
+  const [chatSourceLocation, setChatSourceLocation] = useState<
+    import("@/lib/visual-review").SourceBox | null
+  >(null);
+  useEffect(() => {
+    let cancelled = false;
+    setChatSourceLocation(null);
+    if (artifact && navigation && navigation.projectRoot === projectRoot) {
+      const box = artifact.build.locations.find(
+        (b) => b.file === navigation.filePath && b.line === navigation.line,
+      );
+      if (box)
+        void safeChatSource(artifact, box)
+          .then((safe) => {
+            if (!cancelled && safe) setChatSourceLocation(box);
+          })
+          .catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [artifact, navigation, projectRoot, contentGeneration]);
+  const sourceLocation = artifact ? chatSourceLocation : mainSourceLocation;
+  const locateDisplayedSource = useCallback(
+    async (page: number, x: number, y: number) => {
+      if (!artifact)
+        return projectRoot ? synctexEdit(projectRoot, page, x, y) : null;
+      const box = artifact.build.locations
+        .filter((b) => b.page === page)
+        .sort(
+          (a, b) =>
+            Math.abs(a.y - y) +
+            Math.abs(a.x - x) -
+            Math.abs(b.y - y) -
+            Math.abs(b.x - x),
+        )[0];
+      if (!box) return null;
+      return safeChatSource(artifact, box).catch(() => null);
+    },
+    [artifact, projectRoot],
+  );
 
   const handleTextClick = useCallback(
     (text: string) => {
+      if (artifact) return;
       const state = useDocumentStore.getState();
       const content =
         state.files.find((file) => file.id === state.activeFileId)?.content ??
@@ -267,14 +338,22 @@ export function PdfPreview() {
       }
       if (index !== -1) requestJumpToPosition(index);
     },
-    [requestJumpToPosition],
+    [requestJumpToPosition, artifact],
   );
 
   const handleSynctexClick = useCallback(
     async (page: number, x: number, y: number) => {
       if (!projectRoot) return;
-      const result = await synctexEdit(projectRoot, page, x, y);
-      if (!result) return;
+      const displayed = artifactRef.current;
+      const result = await locateDisplayedSource(page, x, y);
+      if (displayed !== artifactRef.current) return;
+      if (!result) {
+        if (artifact)
+          toast.info(
+            "This PDF contains unapplied edits. No verified location in the main document is available.",
+          );
+        return;
+      }
 
       const normalize = (p: string) =>
         p.replace(/\\/g, "/").replace(/^\.\//, "");
@@ -310,7 +389,13 @@ export function PdfPreview() {
         requestJumpToPosition(offset);
       }
     },
-    [projectRoot, setActiveFile, requestJumpToPosition],
+    [
+      projectRoot,
+      setActiveFile,
+      requestJumpToPosition,
+      locateDisplayedSource,
+      artifact,
+    ],
   );
 
   // Resolved source location from synctex
@@ -329,8 +414,8 @@ export function PdfPreview() {
   useEffect(() => {
     if (!pdfSelection || !projectRoot) return;
     let cancelled = false;
-    synctexEdit(
-      projectRoot,
+    setResolvedSource(null);
+    locateDisplayedSource(
       pdfSelection.pageNumber,
       pdfSelection.pdfX,
       pdfSelection.pdfY,
@@ -343,7 +428,7 @@ export function PdfPreview() {
     return () => {
       cancelled = true;
     };
-  }, [pdfSelection, projectRoot]);
+  }, [pdfSelection, projectRoot, locateDisplayedSource, contentGeneration]);
 
   const pdfContextLabel = resolvedSource
     ? `~@${resolvedSource.file}:${resolvedSource.line}`
@@ -352,7 +437,13 @@ export function PdfPreview() {
       : "";
 
   const navigateToSource = useCallback(() => {
-    if (!resolvedSource) return;
+    if (!resolvedSource) {
+      if (artifact)
+        toast.info(
+          "This PDF contains unapplied edits. No verified location in the main document is available.",
+        );
+      return;
+    }
     const normalize = (p: string) => p.replace(/\\/g, "/").replace(/^\.\//, "");
     const normalizedTarget = normalize(resolvedSource.file);
     const targetFile = files.find(
@@ -386,7 +477,7 @@ export function PdfPreview() {
     } else {
       requestJumpToPosition(offset);
     }
-  }, [resolvedSource, files, setActiveFile, requestJumpToPosition]);
+  }, [resolvedSource, files, setActiveFile, requestJumpToPosition, artifact]);
 
   const buildPdfContext = useCallback(
     (text: string) => {
@@ -481,6 +572,7 @@ export function PdfPreview() {
   })();
 
   useEffect(() => {
+    if (chatPdf.proposal) return;
     if (hasInitialCompile.current === projectRoot) return;
     if (!initialized || !projectRoot) return;
     if (pdfData || isCompiling || compileError) return;
@@ -597,6 +689,10 @@ export function PdfPreview() {
   }, []);
 
   const handleCompile = async (force = false, automatic = false) => {
+    if (chatPdf.proposal) {
+      await chatPdf.compile();
+      return;
+    }
     // Read all guard values from the store to avoid stale closures
     const state = useDocumentStore.getState();
     if (!state.projectRoot) return;
@@ -610,7 +706,7 @@ export function PdfPreview() {
     const activeEntry = allFiles.find((f) => f.id === activeFileId);
     if (!automatic && (!activeEntry || activeEntry.type !== "tex")) return;
     const resolved = resolveCompileTarget(
-      automatic ? currentRootFileId : activeFileId,
+      automatic ? sourceRootFileId : activeFileId,
       allFiles,
     );
     if (!resolved) {
@@ -659,8 +755,16 @@ export function PdfPreview() {
     }
   };
 
+  useEffect(() => {
+    const compile = () => {
+      void chatPdf.compile();
+    };
+    window.addEventListener("compile-chat-pdf", compile);
+    return () => window.removeEventListener("compile-chat-pdf", compile);
+  }, [chatPdf.key, chatPdf.proposal?.id, chatPdf.proposal?.generation]);
+
   useAutoRecompile({
-    enabled: autoRecompile,
+    enabled: autoRecompile && !chatPdf.proposal,
     documentKey: projectRoot
       ? JSON.stringify([projectRoot, currentRootFileId])
       : null,
@@ -674,6 +778,7 @@ export function PdfPreview() {
       setCaptureMode(false);
       if (!projectRoot) return;
 
+      const owner = useAgentChatStore.getState().activeTabId;
       const fileName = `capture-p${result.pageNumber}-${Date.now()}.png`;
       const relativePath = `attachments/${fileName}`;
 
@@ -692,7 +797,13 @@ export function PdfPreview() {
 
         await useDocumentStore.getState().refreshFiles();
 
+        if (
+          useDocumentStore.getState().projectRoot !== projectRoot ||
+          !useAgentChatStore.getState().tabs.some((t) => t.id === owner)
+        )
+          return;
         useAgentChatStore.getState().addPendingAttachment({
+          chatId: owner,
           label: `@${relativePath}`,
           filePath: relativePath,
           selectedText: `[Captured region from PDF page ${result.pageNumber}]`,
@@ -716,7 +827,7 @@ export function PdfPreview() {
   }, [pdfData]);
 
   const renderContent = () => {
-    if (compileError && !visual.active) {
+    if (compileError && !visual.active && !pdfData) {
       const errors = [
         ...new Set(
           compileError
@@ -820,7 +931,7 @@ export function PdfPreview() {
       <div className="relative flex min-h-0 flex-1">
         {aliveOrder.map((rootId) => {
           const data =
-            getPdfBytes(rootId) ??
+            viewerData.current.get(rootId) ??
             (rootId === currentRootFileId && visual.active
               ? new Uint8Array(visual.bytes.current!)
               : null);
@@ -890,7 +1001,9 @@ export function PdfPreview() {
                   artifactId={
                     isActive && visual.active
                       ? visual.metadata.after
-                      : undefined
+                      : isActive
+                        ? artifact?.build.artifactId
+                        : undefined
                   }
                   renderOverlay={
                     isActive && visual.active ? changeOverlay : undefined
@@ -931,6 +1044,12 @@ export function PdfPreview() {
     >
       <div className="flex h-[calc(var(--workspace-topbar-height)+var(--titlebar-height))] shrink-0 flex-nowrap items-center border-border border-b bg-background px-2">
         <div className="flex min-w-0 shrink-0 items-center gap-1">
+          <span
+            className="max-w-32 truncate px-1 text-xs text-muted-foreground"
+            title={chatPdf.label}
+          >
+            {chatPdf.label}
+          </span>
           {isSaving && (
             <div className="flex items-center gap-1.5 rounded-md bg-muted/50 px-2 py-1">
               <LoaderIcon className="size-3.5 animate-spin text-muted-foreground" />
@@ -1014,9 +1133,10 @@ export function PdfPreview() {
           </Button>
         </div>
         {visualChangeReports &&
+          !chatPdf.proposal &&
           visual.metadata.state === "ready" &&
           visual.metadata.main ===
-            files.find((f) => f.id === currentRootFileId)?.relativePath && (
+            files.find((f) => f.id === sourceRootFileId)?.relativePath && (
             <div className="flex items-center gap-1 text-xs">
               <span>{visual.items.length} changes</span>
               {visual.shown && (
@@ -1195,7 +1315,7 @@ export function PdfPreview() {
                 projectRoot={projectRoot}
                 getPdf={() => {
                   if (visual.active) return visual.bytes.current;
-                  const data = getCurrentPdfBytes();
+                  const data = pdfData;
                   return data ? getPdfArrayBuffer(data) : null;
                 }}
               />
@@ -1234,8 +1354,39 @@ export function PdfPreview() {
               : "Visual changes unavailable until compilation succeeds."}
         </p>
       )}
+      {compileError && pdfData && (
+        <div
+          role="alert"
+          className="max-h-28 shrink-0 overflow-auto border-b p-2 text-xs"
+        >
+          <p>{compileError}</p>
+          <button
+            onClick={() =>
+              void useAgentChatStore
+                .getState()
+                .sendPrompt(
+                  `[Compilation errors]\n${compileError}\nFix these LaTeX compilation errors.`,
+                )
+            }
+          >
+            Fix with Chat
+          </button>
+          <button onClick={() => void handleCompile(true)}>Retry</button>
+        </div>
+      )}
       <div className="relative flex min-h-0 flex-1">
         {renderContent()}
+        {visualChangeReports &&
+          artifact &&
+          chatPdf.current &&
+          !chatPdf.busy && (
+            <ProposalReport
+              key={artifact.build.artifactId}
+              proposal={artifact.proposal}
+              main={artifact.main}
+              result={artifact.build}
+            />
+          )}
         {visual.active && reviewPanelOpen && visual.docs.current && (
           <aside className="@[900px]/pv:static absolute inset-y-0 right-0 z-20 w-[300px] max-w-full @[900px]/pv:shrink-0 border-l bg-background">
             <VisualReviewPanel

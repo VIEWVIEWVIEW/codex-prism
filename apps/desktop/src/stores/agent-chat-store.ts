@@ -2,13 +2,20 @@ import { toast } from "sonner";
 import { coalescedRefresh } from "@/lib/coalesced-refresh";
 import { create } from "zustand";
 import { useSettingsStore } from "./settings-store";
-import { backend, type AgentEvent, type Review } from "@/lib/backend";
+import {
+  backend,
+  type AgentEvent,
+  type Review,
+  type Proposal,
+  proposals,
+} from "@/lib/backend";
 import {
   resolveTexRoot,
   getCurrentPdfRootId,
   useDocumentStore,
 } from "./document-store";
 export interface PromptContextOverride {
+  chatId?: string;
   label: string;
   filePath: string;
   selectedText: string;
@@ -42,6 +49,8 @@ interface ChatState {
   projectId: string | null;
   activeProjectPath: string | null;
   review: Review;
+  proposals: Proposal[];
+  decideProposal(action: "apply" | "discard" | "repair"): Promise<void>;
   locked: boolean;
   requests: AgentEvent[];
   selectedModel: string;
@@ -134,6 +143,60 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
   isStreaming: false,
   projectId: null,
   activeProjectPath: null,
+  proposals: [],
+  decideProposal: async (action) => {
+    const state = get();
+    const p = activeProposal(state);
+    if (!p) return;
+    try {
+      const result = await proposals.operate(p, action);
+      await get().refreshReview();
+      if (result?.historyWarning)
+        toast.warning(
+          `Changes applied, but history could not be saved: ${result.historyWarning}`,
+        );
+      if (
+        action === "repair" &&
+        result?.prompt &&
+        get().projectId === p.projectId
+      ) {
+        const owner = get().tabs.find(
+          (t) => t.sessionId === p.threadId || t.id === p.chatId,
+        );
+        if (owner) get().setActiveTab(owner.id);
+        await get().sendPrompt(result.prompt);
+      }
+      if (
+        action === "apply" &&
+        !result?.conflicts?.length &&
+        get().projectId === p.projectId
+      ) {
+        const doc = useDocumentStore.getState();
+        await doc.refreshFiles();
+        const { compileLatex, resolveCompileTarget, formatCompileError } =
+          await import("@/lib/latex-compiler");
+        const target = resolveCompileTarget(
+          getCurrentPdfRootId() ?? doc.activeFileId,
+          doc.files,
+        );
+        if (target && doc.projectRoot) {
+          doc.setIsCompiling(true);
+          try {
+            const pdf = await compileLatex(doc.projectRoot, target.targetPath);
+            if (get().projectId === p.projectId)
+              doc.setPdfData(pdf, target.rootId);
+          } catch (e) {
+            if (get().projectId === p.projectId)
+              doc.setCompileError(formatCompileError(e), target.rootId);
+          } finally {
+            if (get().projectId === p.projectId) doc.setIsCompiling(false);
+          }
+        }
+      }
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
   review: { active: false, changes: [] },
   locked: false,
   requests: [],
@@ -166,6 +229,7 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
       activeProjectPath: root,
       projectId: null,
       review: { active: false, changes: [] },
+      proposals: [],
       locked: !!root,
       requests: [],
       error: null,
@@ -197,7 +261,12 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
   },
   setActiveTab: (id) => {
     const t = get().tabs.find((t) => t.id === id);
-    if (t) set({ activeTabId: id, error: t.error, isStreaming: t.isStreaming });
+    if (t)
+      set({
+        activeTabId: id,
+        error: t.error,
+        isStreaming: t.isStreaming,
+      });
   },
   closeTab: (id) => {
     if (get().tabs.find((t) => t.id === id)?.isStreaming) return;
@@ -215,9 +284,20 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
     if (!id) return;
     return reviewQueue(id, async () => {
       if (get().projectId !== id) return;
-      const review = await backend.review.get(id);
+      const [review, pending] = await Promise.all([
+        backend.review.get(id),
+        proposals.list(id),
+      ]);
       if (get().projectId !== id) return;
-      set({ review, locked: review.active || review.changes.length > 0 });
+      set((s) => ({
+        review,
+        proposals: pending,
+        locked:
+          review.active ||
+          review.changes.length > 0 ||
+          pending.length > 0 ||
+          s.tabs.some((t) => t.isStreaming),
+      }));
     });
   },
   reloadReview: async () => {
@@ -228,7 +308,11 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
       if (get().projectId !== id) return;
       set({
         review,
-        locked: review.active || review.changes.length > 0,
+        locked:
+          review.active ||
+          review.changes.length > 0 ||
+          get().proposals.length > 0 ||
+          get().tabs.some((t) => t.isStreaming),
         error: null,
       });
       await useDocumentStore.getState().refreshFiles();
@@ -324,16 +408,18 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
             state.projectId,
             t.sessionId,
             t.turnId,
-            prompt,
+            context
+              ? `[${context.label}; project file: ${context.filePath}]\n${context.selectedText}\n\n${prompt}`
+              : prompt,
           );
         } catch (e) {
           set({ error: String(e) });
         }
       return;
     }
-    if (state.locked && (state.review.active || !state.review.changes.length)) {
+    if (state.review.active || state.review.changes.length) {
       set({
-        error: "Wait for the current project turn to finish.",
+        error: "Resolve the legacy project review before starting a proposal.",
       });
       return;
     }
@@ -342,8 +428,8 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
       set({ error: "Open a project first" });
       return;
     }
-    if (submissions.has(doc.projectRoot)) return;
-    submissions.add(doc.projectRoot);
+    if (submissions.has(t.id)) return;
+    submissions.add(t.id);
     try {
       await doc.saveAllFiles();
       if (useDocumentStore.getState().files.some((f) => f.isDirty))
@@ -357,7 +443,9 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
         throw new Error("This project has an active turn.");
       const active = doc.files.find((f) => f.id === doc.activeFileId);
       const attachments = [
-        ...state.pendingAttachments,
+        ...state.pendingAttachments.filter(
+          (a) => !a.chatId || a.chatId === t.id,
+        ),
         ...(context ? [context] : []),
       ];
       const text = [
@@ -373,7 +461,9 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
         locked: true,
         isStreaming: true,
         error: null,
-        pendingAttachments: [],
+        pendingAttachments: s.pendingAttachments.filter(
+          (a) => a.chatId && a.chatId !== t.id,
+        ),
         tabs: s.tabs.map((x) =>
           x.id === t.id
             ? {
@@ -411,7 +501,9 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
             )?.relativePath
           : undefined,
         prompt,
+        t.id,
       );
+      await get().refreshReview();
       set((s) => ({
         tabs: s.tabs.map((x) =>
           x.id === t.id
@@ -421,8 +513,8 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
       }));
     } catch (e) {
       set((s) => ({
-        isStreaming: false,
-        error: String(e),
+        isStreaming: s.activeTabId === t.id ? false : s.isStreaming,
+        error: s.activeTabId === t.id ? String(e) : s.error,
         tabs: s.tabs.map((x) =>
           x.id === t.id ? { ...x, isStreaming: false, error: String(e) } : x,
         ),
@@ -431,7 +523,7 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
         await get().refreshReview();
       } catch {}
     } finally {
-      submissions.delete(doc.projectRoot);
+      submissions.delete(t.id);
     }
   },
   cancelExecution: async () => {
@@ -470,6 +562,18 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
       isStreaming: false,
     }));
     await get().refreshReview();
+    const pending = get().proposals.find(
+      (p) => p.threadId === id && ["running", "repairing"].includes(p.state),
+    );
+    if (pending)
+      set((s) => ({
+        tabs: s.tabs.map((x) =>
+          x.id === t.id
+            ? { ...x, isStreaming: true, turnId: pending.turnId ?? null }
+            : x,
+        ),
+        isStreaming: s.activeTabId === t.id || s.isStreaming,
+      }));
   },
   respond: async (r, result) => {
     if (r.id === undefined) return;
@@ -484,6 +588,10 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
     // Finish buffered text before lifecycle events replace items or end a turn.
     if (!e.method.endsWith("/delta")) flushDeltas();
     const p = e.params ?? {};
+    if (e.method === "prism/proposal" && p.projectId === get().projectId) {
+      void get().refreshReview();
+      return;
+    }
     if (e.method === "connection/closed") {
       set((s) => ({
         isStreaming: false,
@@ -498,7 +606,7 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
     if (e.method === "prism/session" && p.projectId === get().projectId) {
       set((s) => ({
         tabs: s.tabs.map((t) =>
-          t.isStreaming && !t.sessionId ? { ...t, sessionId: p.threadId } : t,
+          t.id === p.chatId ? { ...t, sessionId: p.threadId } : t,
         ),
       }));
       return;
@@ -581,7 +689,7 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
       const error = p.turn.error?.message ?? null;
       set((s) => ({
         isStreaming: s.activeTabId === t.id ? false : s.isStreaming,
-        error,
+        error: s.activeTabId === t.id ? error : s.error,
         requests: s.requests.filter((r) => r.params?.threadId !== p.threadId),
         tabs: s.tabs.map((x) =>
           x.id === t.id ? { ...x, isStreaming: false, error } : x,
@@ -644,4 +752,15 @@ function reconcileItem(messages: ChatItem[], item: ChatItem): ChatItem[] {
     ...messages.filter((m) => m.id !== item.id && m.id !== previous?.id),
     normalized,
   ];
+}
+
+export function activeProposal(
+  state: Pick<ChatState, "tabs" | "activeTabId" | "proposals">,
+): Proposal | undefined {
+  const session = state.tabs.find((t) => t.id === state.activeTabId)?.sessionId;
+  return state.proposals.find(
+    (p) =>
+      ((session && p.threadId === session) || p.chatId === state.activeTabId) &&
+      p.state !== "original",
+  );
 }

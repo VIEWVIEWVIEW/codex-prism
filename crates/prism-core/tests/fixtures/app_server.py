@@ -12,12 +12,16 @@ if "--version" in sys.argv:
 (base / "server.pid").write_text(str(os.getpid()))
 root = None
 mode = ""
+threads = {}
+thread_id = "thread-1"
+next_thread = 1
+approvals = {}
 def send(value):
     print(json.dumps(value), flush=True)
 def event(method, params):
     send({"method": method, "params": params})
 def complete():
-    event("turn/completed", {"threadId":"thread-1", "turn":{"id":"turn-1"}})
+    event("turn/completed", {"threadId":thread_id, "turn":{"id":"turn-1"}})
 for line in sys.stdin:
     request = json.loads(line)
     with (base / "requests.jsonl").open("a") as log:
@@ -25,13 +29,18 @@ for line in sys.stdin:
     method = request.get("method")
     args = request.get("params", {})
     if method is None:
-        if request.get("id") == 900:
+        if request.get("id") in approvals:
+            thread_id = approvals.pop(request["id"])
+            root = threads[thread_id]
             (root / "main.tex").write_text("approved edit")
-            event("serverRequest/resolved", {"threadId":"thread-1", "requestId":900})
+            event("serverRequest/resolved", {"threadId":thread_id, "requestId":900})
             complete()
         continue
     if "id" not in request:
         continue
+    if "threadId" in args:
+        thread_id = args["threadId"]
+        root = threads.get(thread_id, root)
     result = {}
     if method == "account/read":
         result = {"account":None,"requiresOpenaiAuth":False}
@@ -42,7 +51,11 @@ for line in sys.stdin:
         if (root / "fail-start").exists():
             send({"id":request["id"],"error":{"message":"fixture start rejected"}})
             continue
-        result = {"thread":{"id":"thread-1"}}
+        if method == "thread/start":
+            thread_id = f"thread-{next_thread}"
+            next_thread += 1
+        threads[thread_id] = root
+        result = {"thread":{"id":thread_id}}
     elif method == "turn/start":
         mode = args["input"][0]["text"]
         if mode == "exit":
@@ -54,10 +67,11 @@ for line in sys.stdin:
         result = {"thread":{"id":"thread-1","turns":[]}}
     send({"id":request["id"],"result":result})
     if method == "turn/start":
-        event("turn/started", {"threadId":"thread-1","turn":{"id":"turn-1"}})
-        event("item/agentMessage/delta", {"threadId":"thread-1","delta":"hello"})
+        event("turn/started", {"threadId":thread_id,"turn":{"id":"turn-1"}})
+        event("item/agentMessage/delta", {"threadId":thread_id,"delta":"hello"})
         if mode == "approval":
-            send({"id":900,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","command":"fixture"}})
+            approvals[900] = thread_id
+            send({"id":900,"method":"item/commandExecution/requestApproval","params":{"threadId":thread_id,"turnId":"turn-1","command":"fixture","sandboxPermissions":"use_default"}})
         else:
             (root / "main.tex").write_text("running edit")
     elif method == "turn/interrupt":
