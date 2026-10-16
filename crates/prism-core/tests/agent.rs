@@ -165,7 +165,7 @@ async fn shutdown_cancels_an_unanswered_agent_request() {
 }
 
 #[tokio::test]
-async fn prompt_option_records_only_user_text_and_applies_to_future_turns() {
+async fn full_prompt_option_preserves_prompt_subject_and_applies_to_future_turns() {
     for enabled in [false, true] {
         let (_dir, backend, p, events) = setup().await;
         backend
@@ -239,7 +239,15 @@ async fn prompt_option_records_only_user_text_and_applies_to_future_turns() {
             .await
             .unwrap();
         let message = commits[0]["message"].as_str().unwrap();
-        assert_eq!(message.contains("Improve this passage"), enabled);
+        assert_eq!(
+            message.lines().next(),
+            Some("docs(agent): Improve this passage")
+        );
+        assert_eq!(message.contains("User prompts:"), enabled);
+        assert_eq!(
+            message.matches("Improve this passage").count(),
+            if enabled { 2 } else { 1 }
+        );
         assert_eq!(message.contains("Keep it short"), enabled);
         assert!(!message.contains("attachment body"));
         backend.shutdown().await;

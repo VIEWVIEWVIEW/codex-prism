@@ -7,6 +7,13 @@ pub(crate) async fn project_service(
     operation: String,
     args: Value,
 ) -> Result<Value, String> {
+    if operation == "project_preview" {
+        return tokio::task::spawn_blocking(move || {
+            crate::project_preview::discover(&app, &project_id)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    }
     if operation == "proposal_compile" {
         return crate::proposals::compile(app, project_id, args).await;
     }

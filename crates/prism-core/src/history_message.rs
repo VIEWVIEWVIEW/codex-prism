@@ -1,5 +1,23 @@
-//! Summarize only immutable accepted bytes, never prompts or mutable working files.
+//! Build history messages from a shortened request and immutable accepted bytes.
 use std::collections::BTreeMap;
+
+/// A single-line subject, bounded by Unicode characters and whole words when possible.
+pub(crate) fn prompt_subject(prompt: &str) -> Option<String> {
+    let clean = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+    if clean.is_empty() {
+        return None;
+    }
+    let prefix = "docs(agent): ";
+    let limit = 100 - prefix.chars().count();
+    let shortened = if clean.chars().count() <= limit {
+        clean
+    } else {
+        let head: String = clean.chars().take(limit - 1).collect();
+        let boundary = head.rfind(' ').unwrap_or(head.len());
+        format!("{}…", &head[..boundary])
+    };
+    Some(format!("{prefix}{shortened}"))
+}
 
 fn compact(text: &str, limit: usize) -> String {
     let clean = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -189,6 +207,25 @@ pub(super) fn acceptance_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn prompt_subjects_are_single_line_bounded_and_unicode_safe() {
+        assert_eq!(
+            prompt_subject("  Clarify\n the\tproof  ").as_deref(),
+            Some("docs(agent): Clarify the proof")
+        );
+        assert_eq!(prompt_subject(" \n\t"), None);
+        let subject = prompt_subject(&"Improve the explanation ".repeat(20)).unwrap();
+        assert!(subject.chars().count() <= 100);
+        assert!(
+            subject.ends_with("explanation…")
+                || subject.ends_with("the…")
+                || subject.ends_with("Improve…")
+        );
+        let subject = prompt_subject(&"界".repeat(120)).unwrap();
+        assert_eq!(subject.chars().count(), 100);
+        assert!(subject.ends_with('…'));
+    }
+
     #[test]
     fn distinguishes_edits_to_the_same_section_and_scopes_to_accepted_files() {
         let before = BTreeMap::from([

@@ -631,15 +631,26 @@ pub(crate) fn checkpoint(
         snapshot_patch(root, files)?,
     )
 }
+pub(crate) use super::message::prompt_subject;
+
 pub(crate) fn accept(
     root: &str,
     id: &str,
     patch: Patch,
     prompts: &[String],
 ) -> Result<Option<SnapshotInfo>, String> {
+    accept_with_subject(root, id, patch, prompts, None)
+}
+pub(crate) fn accept_with_subject(
+    root: &str,
+    id: &str,
+    patch: Patch,
+    prompts: &[String],
+    subject: Option<&str>,
+) -> Result<Option<SnapshotInfo>, String> {
     let lock = mutex(root);
     let _guard = lock.lock().map_err(|e| e.to_string())?;
-    accept_locked(root, id, patch, prompts)
+    accept_locked(root, id, patch, prompts, subject)
 }
 pub(crate) fn recorded(root: &str, id: &str) -> Result<bool, String> {
     Ok(state(root)?.completed.iter().any(|done| done == id))
@@ -658,6 +669,7 @@ pub(crate) fn accept_transaction(
     id: &str,
     patch: Patch,
     prompts: &[String],
+    subject: Option<&str>,
     write: impl FnOnce() -> Result<(), String>,
 ) -> Result<Result<Option<SnapshotInfo>, String>, String> {
     let lock = mutex(root);
@@ -666,13 +678,14 @@ pub(crate) fn accept_transaction(
         return Err("Git target changed during merge; retry".into());
     }
     write()?;
-    Ok(accept_locked(root, id, patch, prompts))
+    Ok(accept_locked(root, id, patch, prompts, subject))
 }
 fn accept_locked(
     root: &str,
     id: &str,
     mut patch: Patch,
     prompts: &[String],
+    subject: Option<&str>,
 ) -> Result<Option<SnapshotInfo>, String> {
     let repo = open_repo(root)?;
     let tracked = tree_files(
@@ -688,6 +701,13 @@ fn accept_locked(
                     .is_some_and(|p| !repo.is_path_ignored(p).unwrap_or(true)))
     });
     let mut message = super::message::acceptance_message(&tracked, &patch);
+    if let Some(subject) = subject {
+        let details = message
+            .split_once("\n\n")
+            .map(|(_, body)| body)
+            .unwrap_or("");
+        message = format!("{subject}\n\n{details}");
+    }
     if !prompts.is_empty() {
         message.push_str("\n\nUser prompts:\n");
         message.push_str(&prompts.join("\n\n---\n\n"));

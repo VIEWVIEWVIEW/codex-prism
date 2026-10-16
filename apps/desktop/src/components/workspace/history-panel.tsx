@@ -137,7 +137,7 @@ export function HistoryPanel({ maxHeight }: { maxHeight?: string }) {
       <div className="space-y-2 border-b px-3 py-2 text-xs">
         <label
           className="flex items-center gap-2"
-          title="Applies to future turns. Included prompts become part of Git history and accompany remote pushes."
+          title="Applies to future turns. Commit subjects already use a shortened request. Full prompts added to the body become part of Git history and accompany remote pushes."
         >
           <input
             type="checkbox"
@@ -147,7 +147,7 @@ export function HistoryPanel({ maxHeight }: { maxHeight?: string }) {
               void run(() => history.setIncludePrompt(root, e.target.checked))
             }
           />
-          Include prompt in commits
+          Include full prompts in commit body
         </label>
         {history.status?.repositoryPath && (
           <button
