@@ -35,8 +35,8 @@ export function EnvironmentOnboarding() {
         <DialogHeader>
           <DialogTitle>Welcome to codex-prism</DialogTitle>
           <DialogDescription>
-            Connect Codex for AI writing. Python and scientific skills can be
-            configured later in workspace settings.
+            Connect Codex for AI writing. Python is optional. You can select
+            scientific skills later in Settings → Environment → Scientific Skills.
           </DialogDescription>
         </DialogHeader>
         <AgentSetup />
