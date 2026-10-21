@@ -1,3 +1,6 @@
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import { openExternal } from "@/lib/backend/desktop-host";
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Message } from "@/components/agent-chat/chat-message";
@@ -82,3 +85,52 @@ describe("chat presentation", () => {
     ]);
   });
 });
+
+it.each(["activity", "commentary", "final_answer"] as const)(
+  "copies a %s link from its right-click menu without opening it",
+  async (kind) => {
+    (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+    const url = "https://example.org/page?query=latex#figures";
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const previous = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    vi.mocked(openExternal).mockClear();
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(
+        <Message item={kind === "activity" ? {
+          id: "link",
+          type: "webSearch",
+          text: "",
+          activity: { action: { type: "openPage", url } },
+        } : {
+          id: "link",
+          type: "agentMessage",
+          phase: kind,
+          text: `[Read the guide](${url})`,
+        }} />,
+      ));
+      await act(async () => {
+        host.querySelector("a")!.dispatchEvent(
+          new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 }),
+        );
+      });
+      const copy = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]'))
+        .find((item) => item.textContent === "Copy link address");
+      expect(copy).toBeDefined();
+      await act(async () => copy!.click());
+      expect(writeText).toHaveBeenCalledWith(url);
+      expect(openExternal).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+      if (previous) Object.defineProperty(navigator, "clipboard", previous);
+      else Reflect.deleteProperty(navigator, "clipboard");
+    }
+  },
+);

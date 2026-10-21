@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, type ComponentProps } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -8,6 +8,35 @@ import type { ChatItem } from "@/stores/agent-chat-store";
 import { summarizeActivity } from "@/lib/chat-activity";
 import { openExternal } from "@/lib/backend/desktop-host";
 import { toast } from "sonner";
+
+import {
+  ContextMenu,
+  ContextMenuTrigger,
+  ContextMenuContent,
+  ContextMenuItem,
+} from "@/components/ui/context-menu";
+
+function ChatLink({ href, ...props }: ComponentProps<"a">) {
+  if (!href) return <a {...props} />;
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <a href={href} {...props} />
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem
+          onSelect={() => {
+            void navigator.clipboard.writeText(href).catch((error) =>
+              toast.error(`Could not copy link: ${String(error)}`),
+            );
+          }}
+        >
+          Copy link address
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+}
 
 export const Message = memo(function Message({ item: m }: { item: ChatItem }) {
   if (m.type === "reasoning") return null;
@@ -23,7 +52,7 @@ export const Message = memo(function Message({ item: m }: { item: ChatItem }) {
           {m.status ? ` · ${m.status}` : ""}
         </p>
         {activity.urls.map((url) => (
-          <a
+          <ChatLink
             key={url}
             href={url}
             className="block break-all underline underline-offset-2 hover:text-foreground"
@@ -35,7 +64,7 @@ export const Message = memo(function Message({ item: m }: { item: ChatItem }) {
             }}
           >
             {url}
-          </a>
+          </ChatLink>
         ))}
       </div>
     );
@@ -54,6 +83,7 @@ export const Message = memo(function Message({ item: m }: { item: ChatItem }) {
     >
       <div className="break-words [&_p]:my-2 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_pre]:my-2 [&_pre]:overflow-auto [&_pre]:rounded-lg [&_pre]:bg-muted [&_pre]:p-3 [&_code]:font-mono [&_code]:text-xs [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_a]:underline [&_h1]:font-semibold [&_h2]:font-semibold [&_h3]:font-semibold">
         <ReactMarkdown
+          components={{ a: ({ node: _node, ...props }) => <ChatLink {...props} /> }}
           remarkPlugins={[remarkGfm, remarkMath]}
           rehypePlugins={[rehypeKatex]}
         >
