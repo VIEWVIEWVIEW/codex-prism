@@ -1,3 +1,4 @@
+import type { Proposal } from "@/lib/backend";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
@@ -6,7 +7,8 @@ import { loadReviewDiff } from "@/lib/review-diff-client";
 import { reviewDiff } from "@/lib/review-diff";
 const { state } = vi.hoisted(() => ({
   state: {
-    proposals: [],
+    proposals: [] as Proposal[],
+    decideProposal: vi.fn(async (_action: string) => {}),
     review: {
       active: false,
       changes: [
@@ -24,7 +26,7 @@ const { state } = vi.hoisted(() => ({
   },
 }));
 vi.mock("@/stores/agent-chat-store", () => ({
-  activeProposal: () => undefined,
+  activeProposal: () => state.proposals[0],
   useAgentChatStore: (select: any = (s: any) => s) => select(state),
 }));
 vi.mock("@/lib/review-diff-client", () => ({
@@ -32,7 +34,10 @@ vi.mock("@/lib/review-diff-client", () => ({
     reviewDiff(before, after),
   ),
 }));
-afterEach(() => vi.clearAllMocks());
+afterEach(() => {
+  state.proposals = [];
+  vi.clearAllMocks();
+});
 it("puts Keep all before file controls only when several files have changes", async () => {
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
   const host = document.createElement("div");
@@ -165,5 +170,51 @@ it("computes only the selected diff, keeps stable revisions cached, and bounds r
   } finally {
     act(() => root.unmount());
     state.review.changes = original;
+  }
+});
+
+it("shows Keep only after a proposal has changes and enables it when the turn finishes", async () => {
+  (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+  const host = document.createElement("div");
+  const root = createRoot(host);
+  const proposal: Proposal = {
+    id: "proposal",
+    projectId: "project",
+    threadId: "thread",
+    generation: 1,
+    state: "running",
+    conflicts: [],
+    parent: null,
+    changes: [],
+  };
+  state.proposals = [proposal];
+  const keep = () =>
+    host.querySelector<HTMLButtonElement>(
+      'button[title="Keep all changes from this chat"]',
+    );
+  try {
+    await act(async () => root.render(<ProposedChangesPanel />));
+    expect(host.textContent).toContain("0 changed files");
+    expect(keep()).toBeNull();
+
+    proposal.state = "ready";
+    await act(async () => root.render(<ProposedChangesPanel />));
+    expect(keep()).toBeNull();
+
+    proposal.changes = [state.review.changes[0] as Proposal["changes"][number]];
+    await act(async () => root.render(<ProposedChangesPanel />));
+    expect(keep()?.disabled).toBe(false);
+    await act(async () => keep()!.click());
+    expect(state.decideProposal).toHaveBeenCalledWith("apply");
+
+    proposal.state = "running";
+    await act(async () => root.render(<ProposedChangesPanel />));
+    expect(keep()?.disabled).toBe(true);
+
+    proposal.changes = [];
+    await act(async () => root.render(<ProposedChangesPanel />));
+    expect(keep()).toBeNull();
+  } finally {
+    await act(async () => root.unmount());
   }
 });
