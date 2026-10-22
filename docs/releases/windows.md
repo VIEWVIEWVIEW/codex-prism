@@ -87,6 +87,8 @@ cargo test --locked --manifest-path crates/prism-core/Cargo.toml windows_install
 ```
 
 Launch the installed app, open a disposable project, compile and inspect the PDF,
-check Connection and the model list, and export Original and Ebook PDFs. Test a
-missing-dependency installation in a clean Windows VM in addition to a machine
-with existing TeX tools; the decision tests use mocks and do not replace that check.
+check Connection and the model list, and export Original and Ebook PDFs. Verify
+missing-dependency setup by uninstalling the dependencies on a test PC, confirming
+their tools are absent, then running setup and repeating the compilation/export
+checks. Also verify that setup reuses existing tools; decision tests use mocks
+and complement these real installation checks.
