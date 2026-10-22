@@ -8,8 +8,8 @@ function Update-ToolPath {
     $paths = @($env:PATH, [Environment]::GetEnvironmentVariable('Path', 'User'),
         [Environment]::GetEnvironmentVariable('Path', 'Machine'),
         "$env:LOCALAPPDATA\Programs\MiKTeX\miktex\bin\x64",
-        "$env:ProgramFiles\MiKTeX\miktex\bin\x64",
-        "$env:LOCALAPPDATA\Microsoft\WinGet\Links")
+        "$env:LOCALAPPDATA\Microsoft\WinGet\Links",
+        "$env:ProgramFiles\MiKTeX\miktex\bin\x64")
     $paths += @(Get-ChildItem "$env:ProgramFiles\gs\*\bin" -Directory -ErrorAction SilentlyContinue | Sort-Object FullName | ForEach-Object FullName)
     $paths += @(Get-ChildItem "${env:ProgramFiles(x86)}\gs\*\bin" -Directory -ErrorAction SilentlyContinue | Sort-Object FullName | ForEach-Object FullName)
     $paths += @(Get-ChildItem 'C:\texlive\*\bin\windows' -Directory -ErrorAction SilentlyContinue | Sort-Object FullName | ForEach-Object FullName)
@@ -44,6 +44,7 @@ function Test-TexEngine([string]$Name) {
 function Get-UsableTexEngines {
     $script:TexDirectory = $null
     foreach ($directory in ($env:PATH -split ';' | Where-Object { $_ } | Select-Object -Unique)) {
+        $directory = $directory.Trim('"')
         $engines = @(@('pdflatex.exe', 'xelatex.exe', 'lualatex.exe') | Where-Object {
             Test-TexEngine (Join-Path $directory $_)
         })
