@@ -2,6 +2,11 @@
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\..\apps\desktop\src-tauri\windows\prerequisites.ps1"
 function Assert($Condition, $Message) { if (!$Condition) { throw $Message } }
+$hashFixture = [IO.Path]::GetTempFileName()
+try {
+    [IO.File]::WriteAllBytes($hashFixture, [Text.Encoding]::ASCII.GetBytes('abc'))
+    Assert ((Get-DownloadSha256 $hashFixture) -eq 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad') 'SHA-256 must work without Get-FileHash'
+} finally { Remove-Item -LiteralPath $hashFixture -Force }
 Invoke-Checked $env:ComSpec @('/d', '/c', 'echo benign diagnostic 1>&2')
 $failed = $false
 try { Invoke-Checked $env:ComSpec @('/d', '/c', 'exit 7') } catch { $failed = $_ -match 'exit code 7' }
@@ -14,7 +19,13 @@ function Install-WinGetPackage([string]$Id) {
     if ($Id -eq 'MiKTeX.MiKTeX') { $script:available += $script:tex + @('miktex.exe', 'initexmf.exe') }
     if ($Id -eq 'OpenAI.Codex') { $script:available += 'codex.exe' }
 }
-function Invoke-Checked([string]$Program, [string[]]$Arguments) { $script:configured += $Program }
+function Invoke-Checked([string]$Program, [string[]]$Arguments) {
+    $script:configured += $Program
+    # Match MiKTeX's real response after basic setup: Biber is already present.
+    if ($Program -eq 'miktex.exe' -and $Arguments[0] -eq 'packages' -and $Arguments[1] -eq 'install') {
+        throw 'biber-windows-x64: package is already installed'
+    }
+}
 $script:tex = @('pdflatex.exe', 'xelatex.exe', 'lualatex.exe', 'bibtex.exe', 'biber.exe')
 $script:available = $script:tex + @('codex.cmd', 'gswin64c.exe')
 $script:installed = @(); $script:configured = @(); $script:failInstall = $false
@@ -44,7 +55,7 @@ try { Install-Prerequisites } catch { $failed = $true }
 Assert ($failed -and $script:installed.Count -eq 0) 'CheckOnly must never install anything'
 $CheckOnly = $false; $script:available = $script:tex + 'codex.exe'; $script:started = $false
 function Invoke-WebRequest { }
-function Get-FileHash { [pscustomobject]@{ Hash = $script:hash } }
+function Get-DownloadSha256 { return $script:hash }
 function Start-Process {
     $script:started = $true
     $script:available += 'gswin64c.exe'

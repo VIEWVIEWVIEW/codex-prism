@@ -20,6 +20,15 @@ function Find-Tool([string]$Name) {
     if ($command) { return $command.Source }
 }
 
+function Get-DownloadSha256([string]$Path) {
+    # Use .NET directly: installer-launched Windows PowerShell may not expose
+    # the Get-FileHash function through its inherited module search path.
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::OpenRead($Path)
+    try { return [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-', '').ToLowerInvariant() }
+    finally { $stream.Dispose(); $algorithm.Dispose() }
+}
+
 function Invoke-Checked([string]$Program, [string[]]$Arguments) {
     if (!$Program) { throw 'A required prerequisite executable was not found.' }
     # Windows PowerShell treats native stderr as ErrorRecord objects. Preserve
@@ -52,7 +61,9 @@ function Install-Prerequisites {
             # Only configure the MiKTeX installation just created by this setup.
             Invoke-Checked (Find-Tool 'initexmf.exe') @('--set-config-value=[MPM]AutoInstall=1')
             Invoke-Checked $miktex @('packages', 'update-package-database')
-            Invoke-Checked $miktex @('packages', 'install', 'biber-windows-x64', 'biblatex', 'latexmk',
+            # The basic installer already includes some of these. `install`
+            # rejects installed packages; `require` installs only missing ones.
+            Invoke-Checked $miktex @('packages', 'require', 'biber-windows-x64', 'biblatex', 'latexmk',
                 'pgf', 'booktabs', 'hyperref', 'fontspec', 'amsmath', 'geometry', 'xcolor', 'lm')
         }
         if (!(Find-Tool 'codex.exe') -and !(Find-Tool 'codex.cmd')) {
@@ -64,7 +75,7 @@ function Install-Prerequisites {
                 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
                 Write-Host 'Downloading Ghostscript 10.08.0 for PDF export...'
                 Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs10080/gs10080w64.exe' -OutFile $download
-                if ((Get-FileHash $download -Algorithm SHA256).Hash -ne '52a91b8bf09298788d7a57b9206127026c23eacd75405f0a131e26dc381dce50') {
+                if ((Get-DownloadSha256 $download) -ne '52a91b8bf09298788d7a57b9206127026c23eacd75405f0a131e26dc381dce50') {
                     throw 'Ghostscript checksum verification failed.'
                 }
                 # Artifex explicitly disables silent mode. Show its license/setup
