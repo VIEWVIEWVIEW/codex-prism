@@ -9,7 +9,8 @@ Node.js and Rust are build dependencies only; users do not need them.
 Setup reuses existing tools. When absent it downloads and installs:
 
 - Microsoft WebView2 through Tauri's bootstrapper (PDF preview is bundled MuPDF).
-- MiKTeX through Windows Package Manager, including Biber and common scientific
+- MiKTeX through Windows Package Manager (`winget`), only when no usable pdfLaTeX,
+  XeLaTeX or LuaLaTeX compiler is detected, including Biber and common scientific
   packages. Newly installed MiKTeX enables downloading additional missing TeX
   packages during compilation. Existing MiKTeX/TeX Live settings are preserved.
 - Codex CLI through Windows Package Manager. Sign in from Connection after setup.
@@ -23,8 +24,19 @@ MiKTeX or Codex is missing. Setup accepts the package/source agreements for thes
 prerequisites. Vendor licenses apply; prerequisites are separate installations
 and remain installed when codex-prism is uninstalled.
 
-If an existing TeX distribution is incomplete, setup lists missing executables
-instead of installing a competing distribution. Complete it and rerun setup.
+Setup detects tools rather than requiring a particular TeX distribution. It
+searches the current and saved Windows PATH, standard MiKTeX locations and
+`C:\texlive\*\bin\windows`, and checks compiler availability with `--version`.
+For a custom installation elsewhere, add its binary directory to PATH before
+running setup. An installed PDF reader alone does not provide a LaTeX compiler.
+
+If any supported compiler works, setup reuses it and warns about missing engines
+or bibliography tools without blocking installation or adding another TeX
+distribution. Install those components in your existing distribution when a
+document needs them. Documents use pdfLaTeX by default; if only XeLaTeX or LuaLaTeX
+is available, select it with a `% !TEX program = xelatex` or `lualatex` comment
+within the main document's first 20 lines. Passing `--version` verifies that a
+compiler starts; individual documents can still need additional TeX packages.
 Failures abort installation and are logged at
 `%LOCALAPPDATA%\codex-prism\installer.log`. Rerunning setup reuses successful
 prerequisite installations. No inference requests are sent during installation.
