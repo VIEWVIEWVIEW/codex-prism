@@ -2,6 +2,19 @@
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\..\apps\desktop\src-tauri\windows\prerequisites.ps1"
 function Assert($Condition, $Message) { if (!$Condition) { throw $Message } }
+$engineProbe = ${function:Test-TexEngine}
+# Exercise actual directory selection before mocking installation decisions.
+function Test-TexEngine([string]$Name) { return $Name -eq 'C:\fixture first\xelatex.exe' -or $Name -eq 'C:\fixture second\pdflatex.exe' }
+$originalPath = $env:PATH
+try {
+    $env:PATH = 'C:\fixture broken;"C:\fixture first";C:\fixture second'
+    $selected = @(Get-UsableTexEngines)
+    Assert ($script:TexDirectory -eq 'C:\fixture first') 'Select the first usable directory, skipping broken tools and handling quoted paths'
+    Assert (($selected -join ',') -eq 'xelatex.exe') 'Do not mix engines from different installations'
+} finally {
+    $env:PATH = $originalPath
+    ${function:Test-TexEngine} = $engineProbe
+}
 $hashFixture = [IO.Path]::GetTempFileName()
 try {
     [IO.File]::WriteAllBytes($hashFixture, [Text.Encoding]::ASCII.GetBytes('abc'))

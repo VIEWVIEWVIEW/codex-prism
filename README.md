@@ -18,8 +18,9 @@ Packaged releases currently target **Ubuntu 26.04 LTS, x86_64**.
 
 Windows 10/11 x64 can be built as a `-setup.exe` installer. Setup reuses an existing
 usable LaTeX compiler, or installs MiKTeX through WinGet if none is detected.
-It also installs Codex through WinGet and Ghostscript through its verified vendor
-installer when missing. See the [Windows setup guide](docs/releases/windows.md)
+It also installs Codex through WinGet and offers optional Ghostscript through its
+verified vendor installer when missing. Canceling Ghostscript still allows
+Original PDF export. See the [Windows setup guide](docs/releases/windows.md)
 for installation, local builds and verification, or download the artifact from
 the **Build Windows** GitHub Actions workflow.
 

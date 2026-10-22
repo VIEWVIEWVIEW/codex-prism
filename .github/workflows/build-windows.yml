@@ -44,7 +44,10 @@ jobs:
             crates/prism-core -> target
             apps/desktop/src-tauri -> target
       - name: Test installer decisions
-        run: powershell -NoProfile -File scripts/windows-prerequisites.test.ps1
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows-prerequisites.test.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:WINDIR\SysWOW64\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File scripts/windows-prerequisites.test.ps1
       - name: Test frontend
         run: corepack pnpm --filter @codex-prism/desktop test
       - name: Test backend

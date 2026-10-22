@@ -17,7 +17,10 @@ Setup reuses existing tools. When absent it downloads and installs:
 - Ghostscript 10.08.0 from the official Artifex release for optimized PDF export,
   with a pinned SHA-256 check before running its installer. Its system-wide setup
   opens its license/setup wizard and requests administrator approval. Complete
-  that wizard to continue; Artifex disables silent installation in this release.
+  that wizard to enable optimized export; canceling it or a download failure
+  does not prevent installing the app. Original PDF export remains available.
+  Artifex disables silent installation in this release. Existing 32-bit or
+  64-bit Ghostscript installations are reused.
 
 An Internet connection and Windows App Installer (`winget`) are needed when
 MiKTeX or Codex is missing. Setup accepts the package/source agreements for these
@@ -29,6 +32,10 @@ searches the current and saved Windows PATH, standard MiKTeX locations and
 `C:\texlive\*\bin\windows`, and checks compiler availability with `--version`.
 For a custom installation elsewhere, add its binary directory to PATH before
 running setup. An installed PDF reader alone does not provide a LaTeX compiler.
+Setup and the app search current PATH, saved user PATH, saved machine PATH and
+standard locations in that order. They select the first directory containing a
+usable supported compiler and keep its compiler/bibliography tools together,
+so tools from multiple TeX installations are not mixed.
 
 If any supported compiler works, setup reuses it and warns about missing engines
 or bibliography tools without blocking installation or adding another TeX
@@ -37,9 +44,16 @@ document needs them. Documents use pdfLaTeX by default; if only XeLaTeX or LuaLa
 is available, select it with a `% !TEX program = xelatex` or `lualatex` comment
 within the main document's first 20 lines. Passing `--version` verifies that a
 compiler starts; individual documents can still need additional TeX packages.
-Failures abort installation and are logged at
+Required prerequisite failures abort installation and are logged at
 `%LOCALAPPDATA%\codex-prism\installer.log`. Rerunning setup reuses successful
 prerequisite installations. No inference requests are sent during installation.
+
+Unattended installation (`codex-prism_1.6.0_x64-setup.exe /S`) skips the optional
+Ghostscript wizard when Ghostscript is missing. Rerun setup interactively later,
+or use the **Get Ghostscript** button after a missing-Ghostscript export error.
+Unattended setup still provisions missing MiKTeX/Codex through WinGet and requires
+Internet access. No administrator prompt is needed for those per-user packages;
+WebView2's bootstrapper may have its own requirements.
 
 ## Build
 
@@ -60,6 +74,11 @@ prerequisite hook are selected automatically by `build:desktop`.
 The **Build Windows** GitHub workflow tests and builds the same installer and
 uploads it with SHA-256 checksums. Builds are unsigned unless a Windows signing
 certificate is configured separately; Windows may show an unknown-publisher warning.
+CI also runs a packaged silent install/uninstall smoke test on its disposable
+runner, using executable dependency fixtures. This verifies the NSIS package and
+optional-tool behavior; it does not claim to install real TeX/Codex packages or
+complete Ghostscript's interactive wizard. Real provisioning and PDF rendering
+were separately verified on a physical Windows PC.
 
 ## Verify locally
 
