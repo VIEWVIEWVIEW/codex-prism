@@ -26,7 +26,7 @@ fn ghostscript() -> Result<PathBuf, String> {
             return Ok(path);
         }
     }
-    Err("Ghostscript is not installed. Install Ghostscript (gs) or choose Original PDF.".into())
+    Err("Ghostscript is not installed. Install Ghostscript (on Windows, rerun setup interactively), or choose Original PDF.".into())
 }
 
 pub(crate) async fn optimize(

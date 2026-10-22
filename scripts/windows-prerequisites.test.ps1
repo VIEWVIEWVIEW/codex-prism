@@ -14,6 +14,8 @@ Assert $failed 'Native command failures must be checked independently of stderr'
 function Update-ToolPath { }
 function Find-Tool([string]$Name) { if ($script:available -contains $Name) { return $Name } }
 function Test-TexEngine([string]$Name) { return ($script:available -contains $Name -and $script:unusable -notcontains $Name) }
+function Get-UsableTexEngines { @('pdflatex.exe', 'xelatex.exe', 'lualatex.exe') | Where-Object { Test-TexEngine $_ } }
+function Find-TexTool([string]$Name) { Find-Tool $Name }
 function Install-WinGetPackage([string]$Id) {
     $script:installed += $Id
     if ($script:failInstall) { throw 'Fixture download failure' }
@@ -75,11 +77,22 @@ function Start-Process {
     [pscustomobject]@{ ExitCode = 0 }
 }
 $script:hash = 'invalid-download'
-$failed = $false
-try { Install-Prerequisites } catch { $failed = $_ -match 'checksum verification failed' }
-Assert ($failed -and !$script:started) 'Never execute an unverified Ghostscript download'
+$warnings = @(Install-Prerequisites 3>&1)
+Assert (($warnings -match 'checksum verification failed') -and !$script:started) 'Never execute an unverified optional Ghostscript download'
 
 $script:hash = '52a91b8bf09298788d7a57b9206127026c23eacd75405f0a131e26dc381dce50'
 Install-Prerequisites
 Assert $script:started 'Verified Ghostscript download must launch the vendor wizard'
-Write-Host 'PASS: 10 prerequisite scenarios and native exit-code handling'
+
+$script:available = $script:tex + @('codex.exe', 'gswin32c.exe'); $script:started = $false
+Install-Prerequisites
+Assert (!$script:started) 'Reuse existing 32-bit Ghostscript'
+
+$script:available = $script:tex + 'codex.exe'; $SkipGhostscript = $true
+Install-Prerequisites
+Assert (!$script:started) 'Unattended setup must not launch the Ghostscript wizard'
+$SkipGhostscript = $false
+function Start-Process { throw 'The operation was canceled by the user' }
+$warnings = @(Install-Prerequisites 3>&1)
+Assert ($warnings -match 'Optional Ghostscript setup was not completed') 'Canceling optional Ghostscript must not abort app setup'
+Write-Host 'PASS: 13 prerequisite scenarios and native exit-code handling'

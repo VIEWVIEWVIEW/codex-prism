@@ -43,18 +43,81 @@ fn directories() -> Vec<PathBuf> {
     if let Some(programs) = std::env::var_os("ProgramFiles") {
         let programs = PathBuf::from(programs);
         paths.push(programs.join(r"MiKTeX\miktex\bin\x64"));
-        if let Ok(entries) = std::fs::read_dir(programs.join("gs")) {
-            for entry in entries.flatten() {
-                paths.push(entry.path().join("bin"));
+        append_bins(&mut paths, &programs.join("gs"), "bin");
+    }
+    if let Some(programs) = std::env::var_os("ProgramFiles(x86)") {
+        append_bins(&mut paths, &PathBuf::from(programs).join("gs"), "bin");
+    }
+    append_bins(&mut paths, Path::new(r"C:\texlive"), r"bin\windows");
+    paths
+}
+
+fn append_bins(paths: &mut Vec<PathBuf>, root: &Path, suffix: &str) {
+    if let Ok(entries) = std::fs::read_dir(root) {
+        let mut bins: Vec<_> = entries.flatten().map(|e| e.path().join(suffix)).collect();
+        bins.sort();
+        paths.extend(bins);
+    }
+}
+
+fn usable_compiler(path: &Path) -> bool {
+    use std::{
+        os::windows::process::CommandExt,
+        process::{Command, Stdio},
+        time::{Duration, Instant},
+    };
+    let Ok(mut child) = Command::new(path)
+        .arg("--version")
+        .creation_flags(0x08000000)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
             }
         }
     }
-    if let Ok(entries) = std::fs::read_dir(r"C:\texlive") {
-        for entry in entries.flatten() {
-            paths.push(entry.path().join(r"bin\windows"));
-        }
+}
+
+fn tex_directory(
+    directories: &[PathBuf],
+    mut usable: impl FnMut(&Path) -> bool,
+) -> Option<PathBuf> {
+    directories
+        .iter()
+        .find(|dir| {
+            ["pdflatex.exe", "xelatex.exe", "lualatex.exe"]
+                .iter()
+                .any(|name| {
+                    let path = dir.join(name);
+                    path.is_file() && usable(&path)
+                })
+        })
+        .cloned()
+}
+
+// Keep all TeX tools in the first usable installation, matching setup. Mixing a
+// compiler from one distribution with another distribution's Biber can fail.
+pub(crate) fn find_tex(name: &str) -> Option<PathBuf> {
+    let dir = tex_directory(&directories(), usable_compiler)?;
+    let path = dir.join(format!("{name}.exe"));
+    if !path.is_file() {
+        return None;
     }
-    paths
+    if ["pdflatex", "xelatex", "lualatex"].contains(&name) && !usable_compiler(&path) {
+        return None;
+    }
+    Some(path)
 }
 
 pub(crate) fn find(name: &str) -> Option<PathBuf> {
@@ -106,6 +169,27 @@ fn npm_codex(prefix: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selects_one_usable_tex_installation_without_mixing_tools() {
+        let temp = tempfile::tempdir().unwrap();
+        let broken = temp.path().join("broken");
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        for dir in [&broken, &first, &second] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(broken.join("pdflatex.exe"), b"").unwrap();
+        std::fs::write(first.join("xelatex.exe"), b"").unwrap();
+        std::fs::write(second.join("biber.exe"), b"").unwrap();
+        std::fs::write(second.join("pdflatex.exe"), b"").unwrap();
+        let selected = tex_directory(&[broken.clone(), first.clone(), second], |p| {
+            !p.starts_with(&broken)
+        })
+        .unwrap();
+        assert_eq!(selected, first);
+        assert!(!selected.join("biber.exe").exists());
+    }
 
     #[test]
     fn discovers_native_npm_codex_in_a_path_with_spaces() {

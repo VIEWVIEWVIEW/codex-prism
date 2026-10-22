@@ -1,17 +1,18 @@
 # Windows PowerShell 5.1. WinGet verifies manifest hashes for MiKTeX/Codex;
 # Ghostscript is pinned and verified explicitly before execution.
 [CmdletBinding()]
-param([switch]$CheckOnly)
+param([switch]$CheckOnly, [switch]$SkipGhostscript)
 $ErrorActionPreference = 'Stop'
 
 function Update-ToolPath {
-    $paths = @($env:PATH, [Environment]::GetEnvironmentVariable('Path', 'Machine'),
-        [Environment]::GetEnvironmentVariable('Path', 'User'),
+    $paths = @($env:PATH, [Environment]::GetEnvironmentVariable('Path', 'User'),
+        [Environment]::GetEnvironmentVariable('Path', 'Machine'),
         "$env:LOCALAPPDATA\Programs\MiKTeX\miktex\bin\x64",
         "$env:ProgramFiles\MiKTeX\miktex\bin\x64",
         "$env:LOCALAPPDATA\Microsoft\WinGet\Links")
-    $paths += @(Get-ChildItem "$env:ProgramFiles\gs\*\bin" -Directory -ErrorAction SilentlyContinue | ForEach-Object FullName)
-    $paths += @(Get-ChildItem 'C:\texlive\*\bin\windows' -Directory -ErrorAction SilentlyContinue | ForEach-Object FullName)
+    $paths += @(Get-ChildItem "$env:ProgramFiles\gs\*\bin" -Directory -ErrorAction SilentlyContinue | Sort-Object FullName | ForEach-Object FullName)
+    $paths += @(Get-ChildItem "${env:ProgramFiles(x86)}\gs\*\bin" -Directory -ErrorAction SilentlyContinue | Sort-Object FullName | ForEach-Object FullName)
+    $paths += @(Get-ChildItem 'C:\texlive\*\bin\windows' -Directory -ErrorAction SilentlyContinue | Sort-Object FullName | ForEach-Object FullName)
     $env:PATH = ($paths | Where-Object { $_ }) -join ';'
 }
 
@@ -41,7 +42,27 @@ function Test-TexEngine([string]$Name) {
 }
 
 function Get-UsableTexEngines {
-    @('pdflatex.exe', 'xelatex.exe', 'lualatex.exe') | Where-Object { Test-TexEngine $_ }
+    $script:TexDirectory = $null
+    foreach ($directory in ($env:PATH -split ';' | Where-Object { $_ } | Select-Object -Unique)) {
+        $engines = @(@('pdflatex.exe', 'xelatex.exe', 'lualatex.exe') | Where-Object {
+            Test-TexEngine (Join-Path $directory $_)
+        })
+        if ($engines.Count -gt 0) {
+            $script:TexDirectory = $directory
+            return $engines
+        }
+    }
+}
+
+function Find-TexTool([string]$Name) {
+    if ($script:TexDirectory) { Find-Tool (Join-Path $script:TexDirectory $Name) }
+}
+
+function Find-Ghostscript {
+    foreach ($name in @('gswin64c.exe', 'gswin32c.exe', 'gs.exe')) {
+        $path = Find-Tool $name
+        if ($path) { return $path }
+    }
 }
 
 function Get-DownloadSha256([string]$Path) {
@@ -95,7 +116,7 @@ function Install-Prerequisites {
         if (!(Find-Tool 'codex.exe') -and !(Find-Tool 'codex.cmd')) {
             Install-WinGetPackage 'OpenAI.Codex'
         }
-        if (!(Find-Tool 'gswin64c.exe') -and !(Find-Tool 'gs.exe')) {
+        if (!(Find-Ghostscript) -and !$SkipGhostscript) {
             $download = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString() + '.exe')
             try {
                 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -109,6 +130,8 @@ function Install-Prerequisites {
                 Write-Host 'Complete the Ghostscript setup wizard to continue.'
                 $process = Start-Process -FilePath $download -PassThru -Wait
                 if ($process.ExitCode -notin @(0, 3010)) { throw "Ghostscript setup failed: $($process.ExitCode)" }
+            } catch {
+                Write-Warning "Optional Ghostscript setup was not completed: $_. Original PDF export remains available. Rerun setup interactively to retry optimized export setup."
             } finally {
                 Remove-Item -LiteralPath $download -Force -ErrorAction SilentlyContinue
             }
@@ -119,11 +142,11 @@ function Install-Prerequisites {
     Write-Host "Available LaTeX compilers: $($engines -join ', ')"
     $missing = @(@('pdflatex.exe', 'xelatex.exe', 'lualatex.exe') | Where-Object { $engines -notcontains $_ })
     $missing += @('bibtex.exe', 'biber.exe') |
-        Where-Object { !(Find-Tool $_) }
+        Where-Object { !(Find-TexTool $_) }
     if ($missing) { Write-Warning "Some LaTeX tools are unavailable: $($missing -join ', '). Documents that use them require completing your existing TeX installation. Documents use pdflatex by default; select an available alternative with a % !TEX program comment." }
     if (!(Find-Tool 'codex.exe') -and !(Find-Tool 'codex.cmd')) { throw 'Codex CLI is missing.' }
-    if (!(Find-Tool 'gswin64c.exe') -and !(Find-Tool 'gs.exe')) { throw 'Ghostscript is missing.' }
-    Write-Host 'Codex, a usable LaTeX compiler and Ghostscript are available.'
+    if (!(Find-Ghostscript)) { Write-Warning 'Ghostscript is unavailable. Original PDF export works; rerun setup interactively to enable optimized PDF export.' }
+    Write-Host 'Codex and a usable LaTeX compiler are available.'
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
