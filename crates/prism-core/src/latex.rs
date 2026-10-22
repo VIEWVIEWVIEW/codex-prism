@@ -204,6 +204,10 @@ fn generated_bib_tool(work_dir: &Path, main_stem: &str) -> Result<BibTool, Strin
 /// GUI apps on macOS lack the user's shell PATH, so we check standard
 /// TeXLive installation locations and fall back to a login-shell query.
 fn find_texlive_binary(name: &str) -> Result<PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    if let Some(path) = crate::windows_tools::find(name) {
+        return Ok(path);
+    }
     // 1. Try PATH (works when launched from terminal)
     if let Ok(path) = which::which(name) {
         return Ok(path);
@@ -220,20 +224,6 @@ fn find_texlive_binary(name: &str) -> Result<PathBuf, String> {
             format!("/usr/local/texlive/2024/bin/x86_64-linux/{}", name),
             format!("/opt/homebrew/bin/{}", name),
             format!("/usr/bin/{}", name),
-        ];
-        for path_str in &standard_paths {
-            let p = PathBuf::from(path_str);
-            if p.exists() {
-                return Ok(p);
-            }
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let standard_paths = [
-            format!("C:\\texlive\\2025\\bin\\windows\\{}.exe", name),
-            format!("C:\\texlive\\2024\\bin\\windows\\{}.exe", name),
         ];
         for path_str in &standard_paths {
             let p = PathBuf::from(path_str);
@@ -260,6 +250,9 @@ fn find_texlive_binary(name: &str) -> Result<PathBuf, String> {
         }
     }
 
+    #[cfg(target_os = "windows")]
+    return Err(format!("{name} not found. Rerun the Windows installer to set up LaTeX, or complete your MiKTeX/TeX Live installation."));
+    #[cfg(not(target_os = "windows"))]
     Err(format!(
         "{} not found. Install TeX Live and add its bin directory to PATH. On Ubuntu, install texlive-latex-extra texlive-xetex texlive-luatex texlive-bibtex-extra texlive-fonts-recommended texlive-publishers biber.",
         name
@@ -1358,7 +1351,10 @@ mod tests {
     fn missing_texlive_tool_names_the_tool_and_installation_action() {
         let error = find_texlive_binary("prism-nonexistent-tex-tool").unwrap_err();
         assert!(error.contains("prism-nonexistent-tex-tool"));
+        #[cfg(not(target_os = "windows"))]
         assert!(error.contains("Install TeX Live"));
+        #[cfg(target_os = "windows")]
+        assert!(error.contains("Rerun the Windows installer"));
     }
 
     #[tokio::test]
@@ -2139,7 +2135,9 @@ mod existing_pdf_tests {
         std::fs::create_dir_all(d.path().join(".prism/build")).unwrap();
         let cached = d.path().join(".prism/build/main.pdf");
         std::fs::write(&cached, b"%PDF-1.7 older").unwrap();
-        std::fs::File::open(&cached)
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&cached)
             .unwrap()
             .set_modified(std::time::SystemTime::UNIX_EPOCH)
             .unwrap();

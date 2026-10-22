@@ -16,6 +16,11 @@ codex-prism is a local, single-user desktop application powered by your installe
 
 Packaged releases currently target **Ubuntu 26.04 LTS, x86_64**.
 
+Windows 10/11 x64 can be built as a `-setup.exe` installer that sets up missing
+LaTeX, PDF and Codex prerequisites. See the [Windows setup guide](docs/releases/windows.md)
+for installation, local builds and verification, or download the artifact from
+the **Build Windows** GitHub Actions workflow.
+
 ### 1. Install the application
 
 Download the `.deb` or `.AppImage` from [the releases page](https://git.jolibrain.com/beniz/codex-prism/releases). For version 1.4.0, install the Debian package from your download directory:
