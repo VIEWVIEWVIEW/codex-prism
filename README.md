@@ -16,15 +16,19 @@ codex-prism is a local, single-user desktop application powered by your installe
 
 Packaged releases currently target **Ubuntu 26.04 LTS, x86_64**.
 
-Windows 10/11 x64 can be built as a `-setup.exe` installer. Setup reuses an existing
-usable LaTeX compiler, or installs MiKTeX through WinGet if none is detected.
-It also installs Codex through WinGet and offers optional Ghostscript through its
-verified vendor installer when missing. Canceling Ghostscript still allows
-Original PDF export. See the [Windows setup guide](docs/releases/windows.md)
-for installation, local builds and verification, or download the artifact from
-the **Build Windows** GitHub Actions workflow.
+**Windows 10/11 x64:** Download the `-setup.exe` installer from the
+[Windows downloads](https://github.com/beniz/codex-prism/actions/workflows/build-windows.yml),
+run it, and follow the setup wizard. Setup installs missing Codex, LaTeX (MiKTeX)
+and WebView2 dependencies automatically, reusing existing installations. It also
+offers Ghostscript for optimized PDF export; complete its setup wizard to enable
+that feature. Then open codex-prism and use **Connection → Sign in** to start
+working. You do not need to build the app or install Node.js or Rust.
 
 ### 1. Install the application
+
+The following installation commands are for Ubuntu. Windows users can run the
+installer above and continue to **3. Open a project and start writing** after
+signing in.
 
 Download the `.deb` or `.AppImage` from [the releases page](https://git.jolibrain.com/beniz/codex-prism/releases). For version 1.4.0, install the Debian package from your download directory:
 
