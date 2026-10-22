@@ -8,6 +8,12 @@ impl Drop for ExportDirectory {
     }
 }
 fn ghostscript() -> Result<PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    for name in ["gswin64c", "gswin32c", "gs"] {
+        if let Some(path) = crate::windows_tools::find(name) {
+            return Ok(path);
+        }
+    }
     for name in [
         "gs",
         "gswin64c",
