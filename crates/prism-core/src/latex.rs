@@ -203,11 +203,13 @@ fn generated_bib_tool(work_dir: &Path, main_stem: &str) -> Result<BibTool, Strin
 /// Resolve a TeXLive engine binary to its full path.
 /// GUI apps on macOS lack the user's shell PATH, so we check standard
 /// TeXLive installation locations and fall back to a login-shell query.
+#[cfg(target_os = "windows")]
 fn find_texlive_binary(name: &str) -> Result<PathBuf, String> {
-    #[cfg(target_os = "windows")]
-    if let Some(path) = crate::windows_tools::find(name) {
-        return Ok(path);
-    }
+    crate::windows_tools::find_tex(name).ok_or_else(|| format!("{name} is unavailable in the selected LaTeX installation. Complete that installation, or select an available engine using a % !TEX program comment. Rerun the Windows installer if no compiler is installed."))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn find_texlive_binary(name: &str) -> Result<PathBuf, String> {
     // 1. Try PATH (works when launched from terminal)
     if let Ok(path) = which::which(name) {
         return Ok(path);
@@ -250,8 +252,6 @@ fn find_texlive_binary(name: &str) -> Result<PathBuf, String> {
         }
     }
 
-    #[cfg(target_os = "windows")]
-    return Err(format!("{name} not found. Rerun the Windows installer to set up LaTeX, or complete your MiKTeX/TeX Live installation."));
     #[cfg(not(target_os = "windows"))]
     Err(format!(
         "{} not found. Install TeX Live and add its bin directory to PATH. On Ubuntu, install texlive-latex-extra texlive-xetex texlive-luatex texlive-bibtex-extra texlive-fonts-recommended texlive-publishers biber.",
@@ -400,14 +400,12 @@ fn texlive_env_path(engine: &Path) -> String {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
     let current_path = std::env::var("PATH").unwrap_or_default();
+    #[cfg(target_os = "windows")]
+    { format!("{};{}", texbin, current_path) }
+    #[cfg(not(target_os = "windows"))]
     if current_path.contains(&texbin) {
         current_path
     } else {
-        #[cfg(target_os = "windows")]
-        {
-            format!("{};{}", texbin, current_path)
-        }
-        #[cfg(not(target_os = "windows"))]
         {
             format!("{}:{}", texbin, current_path)
         }
