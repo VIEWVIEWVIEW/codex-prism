@@ -17,23 +17,6 @@ interface MupdfPageProps {
   overlay?: React.ReactNode;
 }
 
-/** Check if a canvas appears blank (GPU context was silently invalidated).
- *  Uses a single getImageData call covering a small center region. */
-function isCanvasBlank(canvas: HTMLCanvasElement): boolean {
-  if (canvas.width === 0 || canvas.height === 0) return false;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return true; // context fully lost
-  // Sample a 2x2 region from the center in one GPU readback
-  const cx = Math.max(0, Math.floor(canvas.width / 2) - 1);
-  const cy = Math.max(0, Math.floor(canvas.height / 2) - 1);
-  const data = ctx.getImageData(cx, cy, 2, 2).data;
-  // If all sampled pixels have zero alpha, canvas is blank
-  for (let i = 3; i < data.length; i += 4) {
-    if (data[i] !== 0) return false;
-  }
-  return true;
-}
-
 export const MupdfPage = memo(function MupdfPage({
   docId,
   pageIndex,
@@ -47,6 +30,8 @@ export const MupdfPage = memo(function MupdfPage({
   const [textData, setTextData] = useState<StructuredTextData | null>(null);
   const [links, setLinks] = useState<LinkData[]>([]);
   const [renderScale, setRenderScale] = useState(scale);
+  const [pixelRatio, setPixelRatio] = useState(() => window.devicePixelRatio || 1);
+  const [restoreGeneration, setRestoreGeneration] = useState(0);
   const renderGenRef = useRef(0);
   const renderingRef = useRef(false);
   const queuedRenderRef = useRef<(() => void) | null>(null);
@@ -67,6 +52,24 @@ export const MupdfPage = memo(function MupdfPage({
     return () => window.clearTimeout(timeout);
   }, [docId, isVisible, scale]);
 
+  // Display density can change without a CSS resize (monitor changes or
+  // compositor restoration). Re-arm the media query for each new density.
+  useEffect(() => {
+    const refresh = () => setPixelRatio(window.devicePixelRatio || 1);
+    const query = window.matchMedia(`(resolution: ${pixelRatio}dppx)`);
+    query.addEventListener("change", refresh);
+    window.addEventListener("resize", refresh);
+    window.addEventListener("focus", refresh);
+    window.addEventListener(APP_VISIBILITY_RESTORED, refresh);
+    refresh();
+    return () => {
+      query.removeEventListener("change", refresh);
+      window.removeEventListener("resize", refresh);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener(APP_VISIBILITY_RESTORED, refresh);
+    };
+  }, [pixelRatio]);
+
   /** Re-render the page onto the canvas via MuPDF worker. */
   const renderPage = useCallback(() => {
     if (!isVisible || docId <= 0) return;
@@ -78,8 +81,7 @@ export const MupdfPage = memo(function MupdfPage({
     renderingRef.current = true;
     const gen = ++renderGenRef.current;
     const client = getMupdfClient();
-    const dpr = window.devicePixelRatio || 1;
-    const dpi = renderScale * 72 * dpr;
+    const dpi = renderScale * 72 * pixelRatio;
 
     client
       .drawPage(docId, pageIndex, dpi)
@@ -108,7 +110,7 @@ export const MupdfPage = memo(function MupdfPage({
         queuedRenderRef.current = null;
         next?.();
       });
-  }, [docId, pageIndex, renderScale, isVisible]);
+  }, [docId, pageIndex, renderScale, pixelRatio, isVisible, restoreGeneration]);
 
   // Render the canvas immediately on load, then at debounced high-quality zoom.
   useEffect(() => {
@@ -152,26 +154,17 @@ export const MupdfPage = memo(function MupdfPage({
     };
   }, [docId, pageIndex, isVisible]);
 
-  // Re-render canvas when returning from background if content was lost
+  // A compositor-restored canvas can be nonblank but stale or blurry.
+  // Redraw visible pages instead of relying on an alpha-only blank check.
   useEffect(() => {
     const handleVisibilityRestored = () => {
-      const canvas = canvasRef.current;
-      if (!canvas || !isVisible || docId <= 0) return;
-      if (isCanvasBlank(canvas)) {
-        log.warn(
-          `Canvas blank after visibility restore, re-rendering page ${pageIndex}`,
-        );
-        renderPage();
-      }
+      if (!isVisible || docId <= 0) return;
+      setRestoreGeneration((generation) => generation + 1);
     };
-
     window.addEventListener(APP_VISIBILITY_RESTORED, handleVisibilityRestored);
     return () =>
-      window.removeEventListener(
-        APP_VISIBILITY_RESTORED,
-        handleVisibilityRestored,
-      );
-  }, [docId, pageIndex, scale, isVisible, renderPage]);
+      window.removeEventListener(APP_VISIBILITY_RESTORED, handleVisibilityRestored);
+  }, [docId, isVisible]);
 
   return (
     <div
