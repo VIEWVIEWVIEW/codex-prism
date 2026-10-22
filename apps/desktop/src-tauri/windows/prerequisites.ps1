@@ -100,6 +100,16 @@ function Install-WinGetPackage([string]$Id) {
 function Install-Prerequisites {
     Update-ToolPath
     $engines = @(Get-UsableTexEngines)
+    $codex = Find-Tool 'codex.exe'
+    if (!$codex) { $codex = Find-Tool 'codex.cmd' }
+    $ghostscript = Find-Ghostscript
+    if ($codex) { Write-Host "Codex: FOUND - $codex" }
+    else { Write-Host 'Codex: NOT FOUND' }
+    if ($engines.Count -gt 0) { Write-Host "LaTeX: FOUND - $($engines -join ', ') in $script:TexDirectory" }
+    else { Write-Host 'LaTeX: NOT FOUND - no usable compiler detected.' }
+    if ($ghostscript) { Write-Host "PDF tools (Ghostscript): FOUND - $ghostscript" }
+    elseif ($CheckOnly -or $SkipGhostscript) { Write-Host 'PDF tools (Ghostscript): NOT FOUND - optional setup skipped; Original PDF export is available.' }
+    else { Write-Host 'PDF tools (Ghostscript): NOT FOUND - setup will offer the optional Ghostscript wizard.' }
     if (!$CheckOnly) {
         if ($engines.Count -eq 0) {
             Install-WinGetPackage 'MiKTeX.MiKTeX'
@@ -140,14 +150,18 @@ function Install-Prerequisites {
         }
     }
     if ($engines.Count -eq 0) { throw 'No usable LaTeX compiler found. Repair your TeX installation or rerun setup to install MiKTeX.' }
-    Write-Host "Available LaTeX compilers: $($engines -join ', ')"
+    Write-Host "LaTeX: READY - $($engines -join ', ') in $script:TexDirectory"
     $missing = @(@('pdflatex.exe', 'xelatex.exe', 'lualatex.exe') | Where-Object { $engines -notcontains $_ })
     $missing += @('bibtex.exe', 'biber.exe') |
         Where-Object { !(Find-TexTool $_) }
     if ($missing) { Write-Warning "Some LaTeX tools are unavailable: $($missing -join ', '). Documents that use them require completing your existing TeX installation. Documents use pdflatex by default; select an available alternative with a % !TEX program comment." }
-    if (!(Find-Tool 'codex.exe') -and !(Find-Tool 'codex.cmd')) { throw 'Codex CLI is missing.' }
-    if (!(Find-Ghostscript)) { Write-Warning 'Ghostscript is unavailable. Original PDF export works; rerun setup interactively to enable optimized PDF export.' }
-    Write-Host 'Codex and a usable LaTeX compiler are available.'
+    $codex = Find-Tool 'codex.exe'
+    if (!$codex) { $codex = Find-Tool 'codex.cmd' }
+    if (!$codex) { throw 'Codex CLI is missing.' }
+    Write-Host "Codex: READY - $codex"
+    $ghostscript = Find-Ghostscript
+    if ($ghostscript) { Write-Host "PDF tools (Ghostscript): READY - $ghostscript" }
+    else { Write-Warning 'PDF tools (Ghostscript): UNAVAILABLE - Original PDF export works; rerun setup interactively to enable optimized PDF export.' }
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
