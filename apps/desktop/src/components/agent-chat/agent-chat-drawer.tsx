@@ -67,6 +67,7 @@ export function AgentChatDrawer({
     createTab: useAgentChatStore((state) => state.createTab),
     effortLevel: useAgentChatStore((state) => state.effortLevel),
     error: useAgentChatStore((state) => state.error),
+    restoringChats: useAgentChatStore((state) => state.restoringChats),
     isStreaming: useAgentChatStore((state) => state.isStreaming),
     locked: useAgentChatStore((state) => state.locked),
     pendingAttachments: useAgentChatStore(
@@ -162,6 +163,7 @@ export function AgentChatDrawer({
     setup.models.find((m) => m.isDefault);
 
   const canSend =
+    !s.restoringChats &&
     !!t.draft.trim() &&
     !s.pendingReview &&
     setup.status === "ready" &&
@@ -427,7 +429,7 @@ export function AgentChatDrawer({
             }}
             className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-3"
           >
-            {!t.messages.length && (
+            {!s.restoringChats && !t.messages.length && (
               <div className="flex h-full min-h-16 flex-col items-center justify-center gap-2 text-center">
                 <SparklesIcon className="size-5 text-muted-foreground/60" />
                 <p className="text-sm font-medium">
@@ -438,6 +440,11 @@ export function AgentChatDrawer({
                   context.
                 </p>
               </div>
+            )}
+            {s.restoringChats && (
+              <p role="status" className="text-xs text-muted-foreground">
+                Restoring conversations…
+              </p>
             )}
             <ChatHistory key={t.id} messages={t.messages} viewport={viewport} />
             {t.isStreaming && (
@@ -546,6 +553,7 @@ export function AgentChatDrawer({
               <textarea
                 ref={input}
                 rows={2}
+                disabled={s.restoringChats}
                 aria-label="Message Codex"
                 className="block min-h-14 w-full resize-none border-0 bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70"
                 placeholder={

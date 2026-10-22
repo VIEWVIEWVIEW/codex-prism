@@ -1,3 +1,4 @@
+import { readChatTabs, writeChatTabs } from "@/lib/chat-tabs";
 import { toast } from "sonner";
 import { coalescedRefresh } from "@/lib/coalesced-refresh";
 import { create } from "zustand";
@@ -42,6 +43,7 @@ export interface TabState {
   draft: string;
 }
 interface ChatState {
+  restoringChats: boolean;
   tabs: TabState[];
   activeTabId: string;
   error: string | null;
@@ -88,6 +90,7 @@ const tab = (): TabState => ({
   draft: "",
 });
 const first = tab();
+let projectGeneration = 0;
 const submissions = new Set<string>();
 const reviewQueue = coalescedRefresh();
 // One notification per batch, regardless of how many fragments/items arrived.
@@ -137,6 +140,7 @@ function flushDeltas() {
   });
 }
 export const useAgentChatStore = create<ChatState>((set, get) => ({
+  restoringChats: false,
   tabs: [first],
   activeTabId: first.id,
   error: null,
@@ -221,9 +225,12 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
     })),
   resetForProject: (root) => {
     if (get().activeProjectPath === root) return;
+    const generation = ++projectGeneration;
     clearDeltas();
+    const saved = root ? readChatTabs(root) : null;
     const t = tab();
     set({
+      restoringChats: !!root,
       tabs: [t],
       activeTabId: t.id,
       activeProjectPath: root,
@@ -235,18 +242,53 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
       error: null,
       isStreaming: false,
     });
-    if (root)
-      void backend.projects
-        .register(root)
-        .then((p) => {
-          if (get().activeProjectPath === root) {
-            set({ projectId: p.id });
-            void get().refreshReview();
-          }
-        })
-        .catch((e) => set({ error: String(e) }));
+    if (root) void (async () => {
+      try {
+        const p = await backend.projects.register(root);
+        await ensureAgentEvents();
+        const sessions = await backend.agent.sessions(p.id);
+        const candidates = saved?.tabs ?? (sessions.length ? [{
+          id: crypto.randomUUID(), title: sessions[0].title,
+          sessionId: sessions[0].id, draft: "",
+        }] : []);
+        const restored = await Promise.all(candidates
+          .filter((t) => !t.sessionId || sessions.some((s) => s.id === t.sessionId))
+          .map(async (savedTab): Promise<TabState> => {
+            const t = { ...tab(), ...savedTab, projectPath: root };
+            if (t.sessionId) {
+              try {
+                const result = await backend.agent.thread(p.id, t.sessionId, "read");
+                t.messages = (result.thread?.turns ?? []).flatMap((turn: any) =>
+                  (turn.items ?? []).map(toItem));
+              } catch (e) {
+                t.error = `Could not restore conversation: ${String(e)}`;
+              }
+            }
+            return t;
+          }));
+        if (generation !== projectGeneration) return;
+        const tabs = restored.length ? restored : [t];
+        const active = tabs.find((t) => t.id === saved?.activeTabId) ?? tabs[0];
+        set({ tabs, activeTabId: active.id, projectId: p.id,
+          error: active.error });
+        await get().refreshReview();
+        if (generation !== projectGeneration) return;
+        set((s) => {
+          const tabs = s.tabs.map((t) => {
+            const pending = s.proposals.find((p) =>
+              p.threadId === t.sessionId && ["running", "repairing"].includes(p.state));
+            return pending ? { ...t, isStreaming: true, turnId: pending.turnId ?? null } : t;
+          });
+          return { tabs, restoringChats: false, isStreaming: !!tabs.find((t) => t.id === s.activeTabId)?.isStreaming };
+        });
+      } catch (e) {
+        if (generation === projectGeneration)
+          set({ restoringChats: false, error: `Could not restore chats: ${String(e)}` });
+      }
+    })();
   },
   createTab: () => {
+    if (get().restoringChats) return get().activeTabId;
     const t = tab();
     set((s) => ({
       tabs: [...s.tabs, t],
@@ -269,6 +311,7 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
       });
   },
   closeTab: (id) => {
+    if (get().restoringChats) return;
     if (get().tabs.find((t) => t.id === id)?.isStreaming) return;
     let tabs = get().tabs.filter((t) => t.id !== id);
     if (!tabs.length) tabs = [tab()];
@@ -392,6 +435,7 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
     }
   },
   sendPrompt: async (prompt, context) => {
+    if (get().restoringChats) return;
     try {
       await ensureAgentEvents();
     } catch (e) {
@@ -537,6 +581,7 @@ export const useAgentChatStore = create<ChatState>((set, get) => ({
       }
   },
   resumeSession: async (id, title) => {
+    if (get().restoringChats) return;
     await ensureAgentEvents();
     const root = useDocumentStore.getState().projectRoot;
     if (!root) return;
@@ -764,3 +809,18 @@ export function activeProposal(
       p.state !== "original",
   );
 }
+
+// Persist only tab identity and drafts; Codex remains the source of message history.
+useAgentChatStore.subscribe((state) => {
+  if (!state.activeProjectPath || !state.projectId || state.restoringChats) return;
+  try {
+    writeChatTabs(state.activeProjectPath, {
+      activeTabId: state.activeTabId,
+      tabs: state.tabs.map(({ id, title, sessionId, draft }) => ({
+        id, title, sessionId, draft,
+      })),
+    });
+  } catch {
+    // Storage may be unavailable; backend conversations remain accessible in History.
+  }
+});

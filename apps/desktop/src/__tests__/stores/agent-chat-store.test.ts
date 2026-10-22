@@ -1,3 +1,4 @@
+import { readChatTabs, writeChatTabs } from "@/lib/chat-tabs";
 import { beforeEach, describe, it, expect, vi } from "vitest";
 import { useAgentChatStore } from "@/stores/agent-chat-store";
 import { useDocumentStore } from "@/stores/document-store";
@@ -14,6 +15,7 @@ vi.mock("@/lib/backend", () => ({
       control: vi.fn(),
       respond: vi.fn(),
       thread: vi.fn(),
+      sessions: vi.fn(async () => []),
     },
     review: {
       subscribe: vi.fn(async () => () => {}),
@@ -39,6 +41,7 @@ vi.mock("@/lib/latex-compiler", () => ({
 const save = vi.fn(async () => {});
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
   useSettingsStore.setState({ visualChangeReports: true });
   vi.mocked(useDocumentStore.getState).mockReturnValue({
     projectRoot: "/paper",
@@ -49,6 +52,7 @@ beforeEach(() => {
     activeFileId: "main.tex",
   } as any);
   useAgentChatStore.setState({
+    restoringChats: false,
     tabs: [
       {
         id: "tab1",
@@ -616,4 +620,104 @@ it("includes PDF selection context when steering a running chat", async () => {
     expect.stringContaining("selected passage"),
   );
   expect(backend.agent.send).not.toHaveBeenCalled();
+});
+
+describe("project chat restoration", () => {
+  const sessions = [
+    { id: "thread2", projectId: "p1", title: "Second" },
+    { id: "thread1", projectId: "p1", title: "First" },
+  ];
+  const waitForRestore = async () => {
+    await vi.waitFor(() => expect(useAgentChatStore.getState().restoringChats).toBe(false));
+  };
+  beforeEach(() => {
+    vi.mocked(backend.agent.sessions).mockResolvedValue(sessions);
+    vi.mocked(backend.agent.thread).mockImplementation(async (_project, id) => ({
+      thread: { turns: [{ items: [{ id: "reply", type: "agentMessage", text: id }] }] },
+    }));
+  });
+  it("restores open tabs, active conversation and drafts using backend messages", async () => {
+    const state = useAgentChatStore.getState();
+    useAgentChatStore.setState({
+      tabs: [
+        { ...state.tabs[0], id: "one", sessionId: "thread1", title: "First" },
+        { ...state.tabs[0], id: "two", sessionId: "thread2", title: "Second", draft: "Follow up" },
+      ],
+      activeTabId: "two",
+    });
+    expect(readChatTabs("/paper")?.tabs).toHaveLength(2);
+    state.resetForProject(null);
+    state.resetForProject("/paper");
+    await waitForRestore();
+    const restored = useAgentChatStore.getState();
+    expect(restored.tabs.map((t) => t.id)).toEqual(["one", "two"]);
+    expect(restored.activeTabId).toBe("two");
+    expect(restored.tabs[1].draft).toBe("Follow up");
+    expect(restored.tabs[1].messages[0].text).toBe("thread2");
+    expect(restored.tabs.every((t) => !t.isStreaming && t.turnId === null)).toBe(true);
+    expect(backend.agent.send).not.toHaveBeenCalled();
+  });
+  it("opens the newest saved conversation for projects without tab metadata", async () => {
+    useAgentChatStore.getState().resetForProject("/older-project");
+    await waitForRestore();
+    expect(useAgentChatStore.getState().tabs[0].sessionId).toBe("thread2");
+  });
+  it("retains an intentionally empty new chat instead of reopening closed tabs", async () => {
+    writeChatTabs("/empty", {
+      activeTabId: "empty",
+      tabs: [{ id: "empty", title: "New Chat", sessionId: null, draft: "Unsent" }],
+    });
+    useAgentChatStore.getState().resetForProject("/empty");
+    await waitForRestore();
+    expect(useAgentChatStore.getState().tabs[0]).toMatchObject({
+      id: "empty", sessionId: null, draft: "Unsent", messages: [],
+    });
+    expect(backend.agent.thread).not.toHaveBeenCalled();
+  });
+  it("ignores a late restoration after switching projects", async () => {
+    let finish!: (value: typeof sessions) => void;
+    vi.mocked(backend.agent.sessions).mockImplementationOnce(
+      () => new Promise((resolve) => { finish = resolve; }),
+    );
+    useAgentChatStore.getState().resetForProject("/slow");
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    useAgentChatStore.getState().resetForProject("/fast");
+    await waitForRestore();
+    const active = useAgentChatStore.getState().activeTabId;
+    finish([{ id: "wrong", projectId: "p1", title: "Wrong project" }]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(useAgentChatStore.getState().activeProjectPath).toBe("/fast");
+    expect(useAgentChatStore.getState().activeTabId).toBe(active);
+  });
+  it("reconnects a pending running proposal without starting another turn", async () => {
+    vi.mocked(proposals.list).mockResolvedValueOnce([{
+      id: "proposal", projectId: "p1", threadId: "thread2", turnId: "live",
+      generation: 1, state: "running", conflicts: [], parent: null, changes: [],
+    }]);
+    useAgentChatStore.getState().resetForProject("/running");
+    await waitForRestore();
+    expect(useAgentChatStore.getState().tabs[0]).toMatchObject({
+      sessionId: "thread2", turnId: "live", isStreaming: true,
+    });
+    expect(useAgentChatStore.getState().locked).toBe(true);
+    expect(backend.agent.send).not.toHaveBeenCalled();
+  });
+  it("skips archived sessions and falls back to a new tab", async () => {
+    writeChatTabs("/archived", {
+      activeTabId: "gone",
+      tabs: [{ id: "gone", sessionId: "archived", title: "Old", draft: "" }],
+    });
+    useAgentChatStore.getState().resetForProject("/archived");
+    await waitForRestore();
+    expect(useAgentChatStore.getState().tabs).toHaveLength(1);
+    expect(useAgentChatStore.getState().tabs[0].sessionId).toBeNull();
+    expect(backend.agent.thread).not.toHaveBeenCalled();
+  });
+  it("retains a tab and displays an error if its history cannot be read", async () => {
+    vi.mocked(backend.agent.thread).mockRejectedValueOnce(new Error("offline"));
+    useAgentChatStore.getState().resetForProject("/offline");
+    await waitForRestore();
+    expect(useAgentChatStore.getState().tabs[0].sessionId).toBe("thread2");
+    expect(useAgentChatStore.getState().error).toContain("offline");
+  });
 });

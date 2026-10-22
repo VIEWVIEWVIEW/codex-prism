@@ -8,7 +8,7 @@ import { useAgentChatStore } from "@/stores/agent-chat-store";
 import { ProjectPicker } from "@/components/project-picker";
 import { WorkspaceLayout } from "@/components/workspace/workspace-layout";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import { invoke, backend } from "@/lib/backend";
+import { invoke } from "@/lib/backend";
 import { getCurrentWindow } from "@/lib/backend/desktop-host";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ErrorFallback } from "@/components/error-fallback";
@@ -71,7 +71,7 @@ function NativeWindowThemeBridge() {
 function WorkspaceWithAgent() {
   const projectRoot = useDocumentStore((s) => s.projectRoot);
   const initialized = useDocumentStore((s) => s.initialized);
-  const autoResumedProjectRef = useRef<string | null>(null);
+  const restoringChats = useAgentChatStore((s) => s.restoringChats);
   const chatProjectRef = useRef<string | null>(null);
 
   // Update window title
@@ -88,68 +88,9 @@ function WorkspaceWithAgent() {
     useAgentChatStore.getState().resetForProject(projectRoot ?? null);
   }, [projectRoot]);
 
-  // Open the most recent chat when entering a project.
-  useEffect(() => {
-    if (!projectRoot) {
-      autoResumedProjectRef.current = null;
-      return;
-    }
-    if (!initialized) return;
-    if (autoResumedProjectRef.current === projectRoot) return;
-
-    const chatState = useAgentChatStore.getState();
-    if (chatState.pendingInitialPrompt) return;
-
-    autoResumedProjectRef.current = projectRoot;
-    let cancelled = false;
-
-    backend.projects
-      .register(projectRoot)
-      .then((p) => backend.agent.sessions(p.id))
-      .then((sessions) =>
-        sessions.map((s) => ({
-          session_id: s.id,
-          title: s.title,
-          last_modified: 0,
-        })),
-      )
-      .then((sessions) => {
-        if (cancelled) return;
-        const latest = sessions
-          .slice()
-          .sort((a, b) => b.last_modified - a.last_modified)[0];
-
-        const current = useAgentChatStore.getState();
-        if (current.pendingInitialPrompt || current.isStreaming) {
-          return;
-        }
-
-        if (!latest?.session_id) {
-          current.newSession();
-          return;
-        }
-
-        current.resumeSession(latest.session_id, latest.title).catch((err) => {
-          log.warn("Failed to auto-resume latest chat session", {
-            sessionId: latest.session_id,
-            error: String(err),
-          });
-        });
-      })
-      .catch((err) => {
-        log.warn("Failed to auto-resume latest chat session", {
-          error: String(err),
-        });
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [initialized, projectRoot]);
-
   // Consume pending initial prompt from project wizard
   useEffect(() => {
-    if (!initialized) return;
+    if (!initialized || restoringChats) return;
     // Delay to let AgentChatDrawer mount and register event listeners
     const timer = setTimeout(() => {
       const prompt = useAgentChatStore.getState().consumePendingInitialPrompt();
@@ -158,7 +99,7 @@ function WorkspaceWithAgent() {
       }
     }, 500);
     return () => clearTimeout(timer);
-  }, [initialized]);
+  }, [initialized, restoringChats]);
 
   return <WorkspaceLayout />;
 }
