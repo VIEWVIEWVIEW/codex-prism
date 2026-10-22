@@ -20,6 +20,30 @@ function Find-Tool([string]$Name) {
     if ($command) { return $command.Source }
 }
 
+function Test-TexEngine([string]$Name) {
+    $path = Find-Tool $Name
+    if (!$path) { return $false }
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo.FileName = $path
+    $process.StartInfo.Arguments = '--version'
+    $process.StartInfo.UseShellExecute = $false
+    $process.StartInfo.CreateNoWindow = $true
+    $process.StartInfo.RedirectStandardOutput = $true
+    $process.StartInfo.RedirectStandardError = $true
+    try {
+        [void]$process.Start()
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        if (!$process.WaitForExit(10000)) { $process.Kill(); return $false }
+        return $process.ExitCode -eq 0
+    } catch { return $false }
+    finally { $process.Dispose() }
+}
+
+function Get-UsableTexEngines {
+    @('pdflatex.exe', 'xelatex.exe', 'lualatex.exe') | Where-Object { Test-TexEngine $_ }
+}
+
 function Get-DownloadSha256([string]$Path) {
     # Use .NET directly: installer-launched Windows PowerShell may not expose
     # the Get-FileHash function through its inherited module search path.
@@ -53,8 +77,9 @@ function Install-WinGetPackage([string]$Id) {
 
 function Install-Prerequisites {
     Update-ToolPath
+    $engines = @(Get-UsableTexEngines)
     if (!$CheckOnly) {
-        if (!(Find-Tool 'pdflatex.exe')) {
+        if ($engines.Count -eq 0) {
             Install-WinGetPackage 'MiKTeX.MiKTeX'
             $miktex = Find-Tool 'miktex.exe'
             if (!$miktex) { throw 'MiKTeX installation did not provide miktex.exe.' }
@@ -65,6 +90,7 @@ function Install-Prerequisites {
             # rejects installed packages; `require` installs only missing ones.
             Invoke-Checked $miktex @('packages', 'require', 'biber-windows-x64', 'biblatex', 'latexmk',
                 'pgf', 'booktabs', 'hyperref', 'fontspec', 'amsmath', 'geometry', 'xcolor', 'lm')
+            $engines = @(Get-UsableTexEngines)
         }
         if (!(Find-Tool 'codex.exe') -and !(Find-Tool 'codex.cmd')) {
             Install-WinGetPackage 'OpenAI.Codex'
@@ -89,12 +115,15 @@ function Install-Prerequisites {
             Update-ToolPath
         }
     }
-    $missing = @('pdflatex.exe', 'xelatex.exe', 'lualatex.exe', 'bibtex.exe', 'biber.exe') |
+    if ($engines.Count -eq 0) { throw 'No usable LaTeX compiler found. Repair your TeX installation or rerun setup to install MiKTeX.' }
+    Write-Host "Available LaTeX compilers: $($engines -join ', ')"
+    $missing = @(@('pdflatex.exe', 'xelatex.exe', 'lualatex.exe') | Where-Object { $engines -notcontains $_ })
+    $missing += @('bibtex.exe', 'biber.exe') |
         Where-Object { !(Find-Tool $_) }
-    if ($missing) { throw "LaTeX tools missing: $($missing -join ', '). Complete your existing TeX installation, then rerun setup." }
+    if ($missing) { Write-Warning "Some LaTeX tools are unavailable: $($missing -join ', '). Documents that use them require completing your existing TeX installation. Documents use pdflatex by default; select an available alternative with a % !TEX program comment." }
     if (!(Find-Tool 'codex.exe') -and !(Find-Tool 'codex.cmd')) { throw 'Codex CLI is missing.' }
     if (!(Find-Tool 'gswin64c.exe') -and !(Find-Tool 'gs.exe')) { throw 'Ghostscript is missing.' }
-    Write-Host 'Codex, pdfLaTeX, XeLaTeX, LuaLaTeX, BibTeX, Biber and Ghostscript are available.'
+    Write-Host 'Codex, a usable LaTeX compiler and Ghostscript are available.'
 }
 
 if ($MyInvocation.InvocationName -ne '.') {

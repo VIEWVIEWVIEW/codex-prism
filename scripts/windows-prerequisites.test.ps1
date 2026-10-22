@@ -13,6 +13,7 @@ try { Invoke-Checked $env:ComSpec @('/d', '/c', 'exit 7') } catch { $failed = $_
 Assert $failed 'Native command failures must be checked independently of stderr'
 function Update-ToolPath { }
 function Find-Tool([string]$Name) { if ($script:available -contains $Name) { return $Name } }
+function Test-TexEngine([string]$Name) { return ($script:available -contains $Name -and $script:unusable -notcontains $Name) }
 function Install-WinGetPackage([string]$Id) {
     $script:installed += $Id
     if ($script:failInstall) { throw 'Fixture download failure' }
@@ -29,6 +30,7 @@ function Invoke-Checked([string]$Program, [string[]]$Arguments) {
 $script:tex = @('pdflatex.exe', 'xelatex.exe', 'lualatex.exe', 'bibtex.exe', 'biber.exe')
 $script:available = $script:tex + @('codex.cmd', 'gswin64c.exe')
 $script:installed = @(); $script:configured = @(); $script:failInstall = $false
+$script:unusable = @()
 Install-Prerequisites
 Assert ($script:installed.Count -eq 0 -and $script:configured.Count -eq 0) 'Existing tools must remain unchanged'
 
@@ -44,10 +46,21 @@ Assert $failed 'Failed installation must propagate to NSIS'
 Assert ($script:installed.Count -eq 1) 'Stop at the first failed prerequisite'
 
 $script:available = @('pdflatex.exe', 'codex.exe', 'gswin64c.exe'); $script:installed = @(); $script:failInstall = $false
-$failed = $false
-try { Install-Prerequisites } catch { $failed = $_ -match 'LaTeX tools missing' }
-Assert $failed 'An incomplete existing TeX distribution must be reported'
+$missingWarnings = @(Install-Prerequisites 3>&1)
+Assert ($missingWarnings -match 'Some LaTeX tools are unavailable') 'Missing optional tools must be reported without blocking setup'
 Assert ($script:installed.Count -eq 0) 'Do not silently install a competing TeX distribution'
+
+foreach ($engine in @('xelatex.exe', 'lualatex.exe')) {
+    $script:available = @($engine, 'codex.exe', 'gswin64c.exe'); $script:installed = @(); $script:configured = @()
+    Install-Prerequisites
+    Assert ($script:installed.Count -eq 0 -and $script:configured.Count -eq 0) "Reuse $engine even without pdflatex or bibliography tools"
+}
+$script:available = @('pdflatex.exe', 'codex.exe', 'gswin64c.exe'); $script:installed = @()
+$script:unusable = @('pdflatex.exe'); $script:failInstall = $true
+$failed = $false
+try { Install-Prerequisites } catch { $failed = $_ -match 'Fixture download failure' }
+Assert ($failed -and $script:installed -contains 'MiKTeX.MiKTeX') 'A broken compiler must not prevent fallback installation'
+$script:unusable = @(); $script:failInstall = $false
 
 $CheckOnly = $true; $script:available = @(); $script:installed = @()
 $failed = $false
@@ -69,4 +82,4 @@ Assert ($failed -and !$script:started) 'Never execute an unverified Ghostscript 
 $script:hash = '52a91b8bf09298788d7a57b9206127026c23eacd75405f0a131e26dc381dce50'
 Install-Prerequisites
 Assert $script:started 'Verified Ghostscript download must launch the vendor wizard'
-Write-Host 'PASS: 7 prerequisite scenarios and native exit-code handling'
+Write-Host 'PASS: 10 prerequisite scenarios and native exit-code handling'
