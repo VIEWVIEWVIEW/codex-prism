@@ -27,7 +27,7 @@ jobs:
           SUDO=()
           if [ "$(id -u)" != 0 ]; then SUDO=(sudo); fi
           "${SUDO[@]}" apt-get update
-          "${SUDO[@]}" apt-get install -y build-essential pkg-config libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev librsvg2-bin patchelf libssl-dev file curl wget xdg-utils
+          "${SUDO[@]}" apt-get install -y build-essential pkg-config libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev librsvg2-bin patchelf squashfs-tools libssl-dev file curl wget xdg-utils
           corepack enable
       - run: corepack pnpm install --frozen-lockfile
       - name: Check release and run tests

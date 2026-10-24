@@ -1,6 +1,7 @@
+import { normalizeAppDir, verifyAppDir } from "./appimage.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, chmod, rename, lstat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -74,6 +75,7 @@ test("collect produces versioned installers and source provenance", async (t) =>
     manifest.artifacts[0].name,
     "codex-prism-1.3.0-linux-x86_64.deb",
   );
+  assert.equal(manifest.artifacts[1].name, "codex-prism-1.3.0-x86_64.AppImage");
   assert.match(
     await readFile(join(dir, "SHA256SUMS"), "utf8"),
     /^[a-f0-9]{64}  codex-prism/,
@@ -193,4 +195,37 @@ test("publisher refuses mismatched remote tags and already published releases", 
     /already published/,
   );
   assert.equal(writes, 0);
+});
+
+test("AppDir icon survives relocation instead of depending on the build path", async (t) => {
+  const base = await mkdtemp(join(tmpdir(), "prism-appdir-test-"));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const dir = join(base, "original");
+  await mkdir(dir);
+  const icon = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64");
+  await writeFile(join(dir, "prism.png"), icon);
+  await writeFile(join(dir, "prism.desktop"), "[Desktop Entry]\nIcon=prism\n");
+  await writeFile(join(dir, "AppRun"), "#!/bin/sh\nexit 0\n");
+  await chmod(join(dir, "AppRun"), 0o755);
+  await symlink(join(dir, "prism.png"), join(dir, ".DirIcon"));
+  await normalizeAppDir(dir);
+  const relocated = join(base, "relocated");
+  await rename(dir, relocated);
+  await verifyAppDir(relocated);
+  assert.equal((await lstat(join(relocated, ".DirIcon"))).isSymbolicLink(), false);
+  assert.deepEqual(await readFile(join(relocated, ".DirIcon")), icon);
+  await rm(join(relocated, ".DirIcon"));
+  await symlink(join(dir, "prism.png"), join(relocated, ".DirIcon"));
+  await assert.rejects(verifyAppDir(relocated), /ENOENT/);
+});
+
+test("AppDir validation rejects icons outside the package", async (t) => {
+  const base = await mkdtemp(join(tmpdir(), "prism-appdir-invalid-"));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const dir = join(base, "app");
+  await mkdir(dir);
+  await writeFile(join(dir, "prism.desktop"), "[Desktop Entry]\nIcon=prism\n");
+  await writeFile(join(base, "outside.png"), "external");
+  await symlink(join(base, "outside.png"), join(dir, "prism.png"));
+  await assert.rejects(normalizeAppDir(dir), /escapes/);
 });

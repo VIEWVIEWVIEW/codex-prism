@@ -4,7 +4,7 @@ The initial release target is **Ubuntu 26.04 LTS, x86_64**. Build on Ubuntu 26.0
 
 ## Local release (no runner needed)
 
-Install the dependencies listed in the root README, plus `patchelf`, `librsvg2-bin`, `file`, `curl`, `wget`, `xdg-utils`, `libpng-dev`, and `zlib1g-dev`. Install Node 22 with Corepack and Rust via rustup (the repository pins Rust 1.88.0).
+Install the dependencies listed in the root README, plus `patchelf`, `librsvg2-bin`, `file`, `curl`, `wget`, `xdg-utils`, `libpng-dev`, and `zlib1g-dev`, and `squashfs-tools`. Install Node 22 with Corepack and Rust via rustup (the repository pins Rust 1.88.0).
 
 Start from a clean, committed checkout. Replace `1.4.0` below with your chosen version. Version-specific notes in `docs/releases/<version>.md` are included in the artifacts and Gitea release body.
 
@@ -24,8 +24,10 @@ corepack pnpm release:build
 Artifacts go to `dist/releases/v1.4.0/`:
 
 - `codex-prism-1.4.0-linux-x86_64.deb`
-- `codex-prism-1.4.0-linux-x86_64.AppImage`
+- `codex-prism-1.4.0-x86_64.AppImage`
 - `SHA256SUMS`, `RELEASE_NOTES.md`, and `release.json` (source commit and artifact hashes)
+
+Release packaging embeds a portable PNG `.DirIcon` and validates the final AppImage after extraction into a separate directory, before generating checksums. AppImage filenames omit `linux` to follow catalog conventions. This normalization is for the current unsigned AppImage builds; signing, if added, must happen afterwards.
 
 Smoke-test the actual packages before publishing: launch, connect Codex, open a project, compile a PDF, and try chat plus Keep/Undo. Users must install and authenticate the Codex CLI separately and install system TeX Live to compile documents (both `.deb` and AppImage); see the root README for the Ubuntu packages. Existing PDFs can be viewed without TeX Live. Python and external scientific skills are optional. The installed release contains a built frontend; it does not need Node or Rust at runtime. The `codex-prism` symlink in `~/.local/bin` continues launching your repository checkout; remove or rename that symlink if you want an installed package's executable to take precedence.
 

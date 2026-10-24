@@ -1,3 +1,4 @@
+import { repairAppImage } from "./appimage.mjs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream, openAsBlob } from "node:fs";
@@ -128,7 +129,8 @@ export async function collect(cwd = root) {
       throw new Error(
         `Expected exactly one ${extension} in ${bundle}; found ${matches.length}`,
       );
-    const name = `codex-prism-${version}-linux-x86_64.${extension}`;
+    const platform = extension === "AppImage" ? "x86_64" : "linux-x86_64";
+    const name = `codex-prism-${version}-${platform}.${extension}`;
     const destination = join(dir, name);
     await copyFile(matches[0], destination);
     artifacts.push({
@@ -296,6 +298,8 @@ async function main() {
         "Build release packages on Ubuntu 26.04 (use build:desktop for other local builds)",
       );
     for (const command of [
+      "mksquashfs",
+      "unsquashfs",
       "patchelf",
       "rsvg-convert",
       "file",
@@ -342,6 +346,10 @@ async function main() {
         },
       },
     );
+    const bundle = join(root, "apps/desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle");
+    const images = (await filesBelow(bundle)).filter((file) => file.endsWith(".AppImage"));
+    if (images.length !== 1) throw new Error("Expected exactly one AppImage to normalize");
+    await repairAppImage(images[0]);
     console.log(`Release files: ${await collect()}`);
   } else if (command === "publish")
     console.log(`Draft release: ${await publish()}`);
