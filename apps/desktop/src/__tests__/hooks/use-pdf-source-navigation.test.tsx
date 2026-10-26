@@ -84,7 +84,7 @@ it("navigates the displayed PDF and discards obsolete outline lookups", async ()
       "p",
       "after-artifact",
       "chapter.tex",
-      { start: 2, end: 4 },
+      { start: 1, end: 4 },
     );
     expect(result).toMatchObject({ page: 5 });
     props = { ...props, projectRoot: "/different" };

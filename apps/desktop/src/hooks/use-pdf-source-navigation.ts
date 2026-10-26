@@ -41,7 +41,7 @@ export function usePdfSourceNavigation({
           projectId,
           artifactId,
           request!.filePath,
-          { start: request!.line, end: request!.line + 2 },
+          { start: Math.max(1, request!.line - 1), end: request!.line + 2 },
         );
         result =
           boxes.sort(

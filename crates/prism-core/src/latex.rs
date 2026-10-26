@@ -1172,7 +1172,7 @@ pub(crate) fn synctex_view(
     }
     Ok(boxes
         .into_iter()
-        .filter(|b| b.file == file && b.line >= line && b.line <= line.saturating_add(2))
+        .filter(|b| b.file == file && b.line >= line.saturating_sub(1) && b.line <= line.saturating_add(2))
         .min_by(|a, b| {
             a.line
                 .abs_diff(line)
@@ -2249,6 +2249,7 @@ pub(crate) fn forward_synctex(data: &str, root: &Path) -> Vec<SourceBox> {
     let (mut mag, mut unit, mut xo, mut yo) = (1000.0, 1.0, 0.0, 0.0);
     let mut page = 0;
     let mut boxes = Vec::new();
+    let mut seen = HashSet::new();
     let mut horizontal: Vec<Option<SourceBox>> = Vec::new();
     for line in data.lines().map(str::trim) {
         if let Some(rest) = line.strip_prefix("Input:") {
@@ -2289,13 +2290,8 @@ pub(crate) fn forward_synctex(data: &str, root: &Path) -> Vec<SourceBox> {
                     let mut region = parent.clone();
                     region.file = file.clone();
                     region.line = n.line;
-                    if !boxes.iter().any(|b: &SourceBox| {
-                        b.file == region.file
-                            && b.line == region.line
-                            && b.page == region.page
-                            && b.x == region.x
-                            && b.y == region.y
-                    }) {
+                    if seen.insert((region.file.clone(), region.line, region.page,
+                        region.x.to_bits(), region.y.to_bits())) {
                         boxes.push(region);
                     }
                 }
@@ -2330,6 +2326,8 @@ pub(crate) fn forward_synctex(data: &str, root: &Path) -> Vec<SourceBox> {
                                 *parent = Some(region.clone());
                             }
                         }
+                        seen.insert((region.file.clone(), region.line, region.page,
+                            region.x.to_bits(), region.y.to_bits()));
                         boxes.push(region);
                     }
                 }
@@ -2407,6 +2405,11 @@ mod outline_navigation_tests {
         assert!(found.y > 100.0);
         assert!(locate("\\section{Other}", &revision).is_none());
         assert!(locate("\\section{Results}", "old-pdf").is_none());
+        std::fs::write(work.join("chapters/results.tex"), "% comment\n\\section{Results}\nContent").unwrap();
+        let nearby = synctex_view(root.to_str().unwrap(), "main.tex",
+            "chapters/results.tex", 2, "\\section{Results}", &revision).unwrap().unwrap();
+        assert_eq!(nearby.page, 3);
+
         std::fs::remove_file(work.join("main.synctex")).unwrap();
         assert!(locate("\\section{Results}", &revision).is_none());
     }

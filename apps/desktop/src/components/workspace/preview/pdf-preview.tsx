@@ -1,4 +1,4 @@
-import { useChatPdf, safeChatSource } from "@/hooks/use-chat-pdf";
+import { useChatPdf, safeChatSource, chatHeadingLocation } from "@/hooks/use-chat-pdf";
 import { ProposalReport } from "../proposal-preview";
 import { usePdfNavigationStore } from "@/stores/pdf-navigation-store";
 import { toast } from "sonner";
@@ -283,15 +283,11 @@ export function PdfPreview() {
     let cancelled = false;
     setChatSourceLocation(null);
     if (artifact && navigation && navigation.projectRoot === projectRoot) {
-      const box = artifact.build.locations.find(
-        (b) => b.file === navigation.filePath && b.line === navigation.line,
-      );
-      if (box)
-        void safeChatSource(artifact, box)
-          .then((safe) => {
-            if (!cancelled && safe) setChatSourceLocation(box);
-          })
-          .catch(() => {});
+      void chatHeadingLocation(artifact, navigation)
+        .then((box) => {
+          if (!cancelled) setChatSourceLocation(box);
+        })
+        .catch(() => {});
     }
     return () => {
       cancelled = true;

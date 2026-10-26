@@ -5,6 +5,7 @@ import {
   useChatPdf,
   clearChatPdfCache,
   safeChatSource,
+  chatHeadingLocation,
   type ChatPdfArtifact,
 } from "@/hooks/use-chat-pdf";
 import { proposals, type Proposal } from "@/lib/backend";
@@ -207,4 +208,24 @@ it("retains the chat PDF while a repair candidate runs", async () => {
   await render();
   expect(current.artifact?.bytes[0]).toBe(2);
   expect(current.current).toBe(true);
+});
+
+it("maps an unchanged heading in edited proposal source and supports repeated jumps", async () => {
+  const source = "% inserted\n\\section{Results}\nchanged body";
+  vi.mocked(proposals.operate).mockResolvedValue({
+    bytes: [...new TextEncoder().encode(source)],
+  });
+  const box = { file: "main.tex", line: 1, page: 3, x: 0, y: 10, w: 1, h: 1 };
+  const artifact: ChatPdfArtifact = {
+    proposal, main: "main.tex", bytes: new Uint8Array([1]),
+    build: { ...build(1), locations: [box] },
+  };
+  const request = { filePath: "main.tex", line: 1, sourceLine: "\\section{Results}" };
+  expect(await chatHeadingLocation(artifact, request)).toEqual(box);
+  expect(await chatHeadingLocation(artifact, request)).not.toBe(box);
+  expect(await chatHeadingLocation(artifact, { ...request, sourceLine: "\\section{Missing}" })).toBeNull();
+  vi.mocked(proposals.operate).mockResolvedValue({
+    bytes: [...new TextEncoder().encode(source + "\n\\section{Results}")],
+  });
+  expect(await chatHeadingLocation(artifact, request)).toBeNull();
 });
