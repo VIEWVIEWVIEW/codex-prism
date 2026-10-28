@@ -272,7 +272,9 @@ export function PdfPreview() {
         ? getPdfArrayBuffer(pdfData)
         : null,
     artifactId: visual.active ? visual.metadata.after : undefined,
-    enabled: !artifact && !isCompiling && !compileError,
+    // A visible PDF remains navigable during a build or after a failed build.
+    // The backend verifies its revision before using SyncTeX.
+    enabled: !artifact,
   });
 
   const navigation = usePdfNavigationStore((s) => s.request);

@@ -948,6 +948,14 @@ pub(crate) async fn load_existing_pdf(
 }
 
 fn find_existing_pdf(root: &Path, main_file: &str) -> Result<Option<(PathBuf, Vec<u8>)>, String> {
+    find_pdf_revision(root, main_file, None)
+}
+
+fn find_pdf_revision(
+    root: &Path,
+    main_file: &str,
+    revision: Option<&str>,
+) -> Result<Option<(PathBuf, Vec<u8>)>, String> {
     crate::projects::resolve(root, main_file)?;
     let main = Path::new(main_file);
     let stem = main
@@ -972,7 +980,9 @@ fn find_existing_pdf(root: &Path, main_file: &str) -> Result<Option<(PathBuf, Ve
     for (_, path) in candidates {
         let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
         // Ignore empty/obviously invalid artifacts from interrupted builds.
-        if bytes.starts_with(b"%PDF-") {
+        if bytes.starts_with(b"%PDF-")
+            && revision.is_none_or(|expected| crate::projects::revision(&bytes) == expected)
+        {
             return Ok(Some((path, bytes)));
         }
     }
@@ -1125,12 +1135,9 @@ pub(crate) fn synctex_view(
     pdf_revision: &str,
 ) -> Result<Option<SourceBox>, String> {
     let root = Path::new(project_dir);
-    let Some((pdf, bytes)) = find_existing_pdf(root, main_file)? else {
+    let Some((pdf, _)) = find_pdf_revision(root, main_file, Some(pdf_revision))? else {
         return Ok(None);
     };
-    if crate::projects::revision(&bytes) != pdf_revision {
-        return Ok(None);
-    }
     let work = pdf.parent().ok_or("Invalid PDF directory")?;
     let gz = pdf.with_extension("synctex.gz");
     let plain = pdf.with_extension("synctex");
@@ -1157,14 +1164,26 @@ pub(crate) fn synctex_view(
     let Ok(text) = std::fs::read_to_string(source) else {
         return Ok(None);
     };
-    if text
+    // The editor may have gained or lost lines since this PDF was built.
+    // Resolve an unchanged heading in the compiled source rather than silently
+    // dropping the click. Refuse ambiguous matches instead of guessing a section.
+    let line = if text
         .lines()
         .nth(line.saturating_sub(1) as usize)
         .map(str::trim)
-        != Some(source_line.trim())
+        == Some(source_line.trim())
     {
-        return Ok(None);
-    }
+        line
+    } else {
+        let mut matches = text
+            .lines()
+            .enumerate()
+            .filter(|(_, value)| value.trim() == source_line.trim());
+        match (matches.next(), matches.next()) {
+            (Some((index, _)), None) => index as u32 + 1,
+            _ => return Ok(None),
+        }
+    };
     let mut boxes = forward_synctex(&data, work);
     // PDFs built beside their source can record project-relative absolute inputs.
     if work != root {
@@ -1172,7 +1191,9 @@ pub(crate) fn synctex_view(
     }
     Ok(boxes
         .into_iter()
-        .filter(|b| b.file == file && b.line >= line.saturating_sub(1) && b.line <= line.saturating_add(2))
+        .filter(|b| {
+            b.file == file && b.line >= line.saturating_sub(1) && b.line <= line.saturating_add(2)
+        })
         .min_by(|a, b| {
             a.line
                 .abs_diff(line)
@@ -2405,11 +2426,57 @@ mod outline_navigation_tests {
         assert!(found.y > 100.0);
         assert!(locate("\\section{Other}", &revision).is_none());
         assert!(locate("\\section{Results}", "old-pdf").is_none());
-        std::fs::write(work.join("chapters/results.tex"), "% comment\n\\section{Results}\nContent").unwrap();
-        let nearby = synctex_view(root.to_str().unwrap(), "main.tex",
-            "chapters/results.tex", 2, "\\section{Results}", &revision).unwrap().unwrap();
+        // Unsaved insertions in the editor must not invalidate the compiled heading.
+        let moved = synctex_view(
+            root.to_str().unwrap(),
+            "main.tex",
+            "chapters/results.tex",
+            20,
+            "\\section{Results}",
+            &revision,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(moved.page, 3);
+        // An unrelated newer PDF beside the source must not mask the displayed build.
+        std::fs::write(root.join("main.pdf"), b"%PDF-newer-external").unwrap();
+        std::fs::File::open(root.join("main.pdf"))
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60))
+            .unwrap();
+        assert_eq!(locate("\\section{Results}", &revision).unwrap().page, 3);
+        std::fs::write(
+            work.join("chapters/results.tex"),
+            "% comment\n\\section{Results}\nContent",
+        )
+        .unwrap();
+        let nearby = synctex_view(
+            root.to_str().unwrap(),
+            "main.tex",
+            "chapters/results.tex",
+            2,
+            "\\section{Results}",
+            &revision,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(nearby.page, 3);
 
+        std::fs::write(
+            work.join("chapters/results.tex"),
+            "% comment\n\\section{Results}\n\\section{Results}\n",
+        )
+        .unwrap();
+        assert!(synctex_view(
+            root.to_str().unwrap(),
+            "main.tex",
+            "chapters/results.tex",
+            20,
+            "\\section{Results}",
+            &revision
+        )
+        .unwrap()
+        .is_none());
         std::fs::remove_file(work.join("main.synctex")).unwrap();
         assert!(locate("\\section{Results}", &revision).is_none());
     }
