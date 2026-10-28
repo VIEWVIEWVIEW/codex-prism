@@ -129,6 +129,8 @@ History records explicit saves, checkpoints before agent turns, and accepted age
 
 Externally staged changes, detached HEAD and ongoing merges/rebases pause automatic history recording without blocking document edits or acceptance. History displays the reason and offers Retry using captured content. Application state and generated outputs are excluded from new history commits; already tracked files remain tracked.
 
+History also includes local images referenced by literal `\includegraphics` paths, including PDF figures excluded by `*.pdf` ignore rules. It supports `\graphicspath`, omitted image extensions, and included `.tex` sources. Accepting agent changes includes existing untracked figures referenced by the accepted source. Compiled document PDFs stay excluded. Missing, external, or symlinked figures produce a history error; copy them into the project and correct their references before creating a new checkpoint. Filenames computed by TeX macros are not resolved automatically.
+
 
 The application is currently local and single-user. Browser hosting and project collaboration are not included yet.
 

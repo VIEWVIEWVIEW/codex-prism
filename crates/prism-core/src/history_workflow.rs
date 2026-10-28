@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
+#[path = "history_figures.rs"]
+mod figures;
+
 type Inputs = BTreeMap<String, Vec<u8>>;
 type Patch = BTreeMap<String, Option<Vec<u8>>>;
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -237,8 +240,11 @@ pub(crate) fn capture(root: &str) -> Result<Inputs, String> {
             files.insert(name.clone(), fs::read(path).map_err(|e| e.to_string())?);
         }
     }
+    let figures = figures::collect(root, &files, files.keys().cloned().collect())?;
+    files.extend(figures.clone());
     files.retain(|name, _| {
-        old.contains_key(name)
+        figures.contains_key(name)
+            || old.contains_key(name)
             || (!generated(name)
                 && repo_path(&repo, root, name)
                     .ok()
@@ -246,16 +252,19 @@ pub(crate) fn capture(root: &str) -> Result<Inputs, String> {
     });
     Ok(files)
 }
-fn snapshot_patch(root: &str, files: Inputs) -> Result<Patch, String> {
+fn snapshot_patch(root: &str, mut files: Inputs) -> Result<Patch, String> {
     let repo = open_repo(root)?;
     let old = tree_files(
         &repo,
         root,
         head(&repo).and_then(|c| c.tree().ok()).as_ref(),
     )?;
+    let figures = figures::collect(root, &files, files.keys().cloned().collect())?;
+    files.extend(figures.clone());
     let mut patch: Patch = old.keys().map(|k| (k.clone(), None)).collect();
     for (name, bytes) in files {
-        if old.contains_key(&name)
+        if figures.contains_key(&name)
+            || old.contains_key(&name)
             || (!generated(&name)
                 && !repo
                     .is_path_ignored(repo_path(&repo, root, &name)?)
@@ -486,11 +495,9 @@ fn apply(root: &str, op: &Operation) -> Result<Option<SnapshotInfo>, String> {
         }
         let path = repo_path(&repo, root, name)?;
         let previous = index.get_path(&path, 0);
-        if previous.is_none()
-            && (generated(name) || repo.is_path_ignored(&path).map_err(|e| e.to_string())?)
-        {
-            continue;
-        }
+        // The durable patch has already been filtered at capture/acceptance.
+        // Re-filtering here would drop explicitly referenced PDF figures and
+        // make retries depend on subsequent changes to ignore rules.
         if let Some(bytes) = bytes {
             let oid = repo.blob(bytes).map_err(|e| e.to_string())?;
             if previous.as_ref().is_some_and(|p| p.id == oid) {
@@ -693,8 +700,27 @@ fn accept_locked(
         root,
         head(&repo).and_then(|c| c.tree().ok()).as_ref(),
     )?;
+    // Resolve against the accepted source, not unrelated editor changes on disk.
+    let mut intended = tracked.clone();
+    for (name, bytes) in &patch {
+        match bytes {
+            Some(bytes) => {
+                intended.insert(name.clone(), bytes.clone());
+            }
+            None => {
+                intended.remove(name);
+            }
+        }
+    }
+    let figures = figures::collect(root, &intended, intended.keys().cloned().collect())?;
+    for (name, bytes) in &figures {
+        if !tracked.contains_key(name) && !patch.contains_key(name) {
+            patch.insert(name.clone(), Some(bytes.clone()));
+        }
+    }
     patch.retain(|name, _| {
-        tracked.contains_key(name)
+        figures.contains_key(name)
+            || tracked.contains_key(name)
             || (!generated(name)
                 && repo_path(&repo, root, name)
                     .ok()
@@ -917,6 +943,89 @@ mod tests {
             .unwrap()
             .content()
             .to_vec()
+    }
+    #[test]
+    fn referenced_figures_are_committed_but_output_pdf_is_not() {
+        let d = fixture();
+        let root = d.path().to_str().unwrap();
+        fs::create_dir(d.path().join("figures")).unwrap();
+        fs::write(d.path().join("figures/plot.pdf"), b"figure pdf").unwrap();
+        fs::write(
+            d.path().join("figures/plot.tex"),
+            b"standalone figure source",
+        )
+        .unwrap();
+        fs::write(d.path().join("figures/photo.png"), b"figure png").unwrap();
+        fs::write(d.path().join("main.pdf"), b"compiled document").unwrap();
+        fs::write(d.path().join("unused.pdf"), b"unused").unwrap();
+        fs::write(
+            d.path().join("section.tex"),
+            br"\includegraphics[width=2cm]{photo}",
+        )
+        .unwrap();
+        fs::write(
+            d.path().join("main.tex"),
+            br"\graphicspath{{figures/}}
+\includegraphics{plot}
+\input{section}
+% \includegraphics{missing}",
+        )
+        .unwrap();
+        checkpoint(root, "docs: add figures", None).unwrap();
+        let repo = open_repo(root).unwrap();
+        assert_eq!(contents(&repo, "figures/plot.pdf"), b"figure pdf");
+        assert_eq!(contents(&repo, "figures/photo.png"), b"figure png");
+        let tree = head(&repo).unwrap().tree().unwrap();
+        assert!(tree.get_path(Path::new("main.pdf")).is_err());
+        assert!(tree.get_path(Path::new("unused.pdf")).is_err());
+        let patch = BTreeMap::from([("figures/plot.pdf".into(), Some(b"updated pdf".to_vec()))]);
+        accept(root, "update-figure", patch, &[]).unwrap();
+        assert_eq!(contents(&repo, "figures/plot.pdf"), b"updated pdf");
+    }
+    #[test]
+    fn acceptance_adds_existing_untracked_figure_and_retries_captured_bytes() {
+        let d = fixture();
+        let root = d.path().to_str().unwrap();
+        fs::write(d.path().join("plot.pdf"), b"original figure").unwrap();
+        fs::write(d.path().join("other.tex"), b"unrelated editor change").unwrap();
+        let repo = open_repo(root).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("other.tex")).unwrap();
+        index.write().unwrap();
+        let patch =
+            BTreeMap::from([("main.tex".into(), Some(br"\includegraphics{plot}".to_vec()))]);
+        assert!(accept(root, "figures", patch, &[]).is_err());
+        assert_eq!(
+            state(root).unwrap().pending[0].patch["plot.pdf"],
+            Some(b"original figure".to_vec())
+        );
+        fs::write(d.path().join("plot.pdf"), b"later figure").unwrap();
+        index
+            .read_tree(&head(&repo).unwrap().tree().unwrap())
+            .unwrap();
+        index.write().unwrap();
+        retry(root).unwrap();
+        assert_eq!(contents(&repo, "plot.pdf"), b"original figure");
+        assert_eq!(contents(&repo, "other.tex"), b"unchanged");
+        assert_eq!(
+            fs::read(d.path().join("other.tex")).unwrap(),
+            b"unrelated editor change"
+        );
+    }
+    #[test]
+    fn missing_and_external_figures_do_not_create_incomplete_commits() {
+        for reference in ["missing.png", "../outside.png", "/tmp/outside.png"] {
+            let d = fixture();
+            let root = d.path().to_str().unwrap();
+            let repo = open_repo(root).unwrap();
+            let before = head(&repo).unwrap().id();
+            let patch = BTreeMap::from([(
+                "main.tex".into(),
+                Some(format!("\\includegraphics{{{reference}}}").into_bytes()),
+            )]);
+            assert!(accept(root, "invalid", patch, &[]).is_err());
+            assert_eq!(head(&repo).unwrap().id(), before);
+        }
     }
     #[test]
     fn interrupted_ref_publication_recovers_owned_index_without_duplicate_commit() {
