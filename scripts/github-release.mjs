@@ -19,23 +19,31 @@ const packages = [
   ["codex-prism-macos-arm64", ".dmg", "macos-arm64.dmg"],
 ];
 
+async function filesBelow(directory) {
+  const files = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...(await filesBelow(path)));
+    else if (entry.isFile()) files.push(path);
+  }
+  return files;
+}
+
 export async function assemble(input, output, { version, commit, notes }) {
   validateVersion(version);
   // Validate every platform before staging a release with missing packages.
   const selected = [];
   for (const [directory, extension, suffix] of packages) {
     const source = join(input, directory);
-    const matches = (await readdir(source, { withFileTypes: true })).filter(
-      (entry) => entry.isFile() && entry.name.endsWith(extension),
+    // Upload-artifact preserves version folders after a wildcard in its path.
+    const matches = (await filesBelow(source)).filter((path) =>
+      path.endsWith(extension),
     );
     if (matches.length !== 1)
       throw new Error(
         `Expected one ${extension} in ${directory}; found ${matches.length}`,
       );
-    selected.push([
-      join(source, matches[0].name),
-      `codex-prism-${version}-${suffix}`,
-    ]);
+    selected.push([matches[0], `codex-prism-${version}-${suffix}`]);
   }
   await mkdir(output, { recursive: true });
   const artifacts = [];

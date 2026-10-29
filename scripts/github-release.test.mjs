@@ -1,7 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import { assemble, uploadDraft } from "./github-release.mjs";
@@ -47,6 +54,21 @@ test("assembles all platforms with distinct names, source commit, and verified c
         .digest("hex"),
     );
   }
+});
+
+test("finds Linux packages inside the version folder preserved by artifact upload", async (t) => {
+  const { input, output, options } = await fixture(t);
+  const linux = join(input, "codex-prism-linux-x64");
+  const versioned = join(linux, "v1.6.2");
+  await mkdir(versioned);
+  for (const name of ["app.deb", "app.AppImage"])
+    await rename(join(linux, name), join(versioned, name));
+  const files = await assemble(input, output, options);
+  assert.equal(files.length, 7);
+  assert.equal(
+    await readFile(join(output, "codex-prism-1.6.2-x86_64.AppImage"), "utf8"),
+    "bytes:app.AppImage",
+  );
 });
 
 test("missing or duplicate platform packages prevent release assembly", async (t) => {
