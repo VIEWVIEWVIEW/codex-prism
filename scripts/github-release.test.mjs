@@ -107,7 +107,10 @@ test("draft retries reuse identical assets and reject changed or published asset
   const calls = [];
   const run = (args) => {
     calls.push(args);
-    return JSON.stringify([[release]]);
+    return [
+      JSON.stringify({ ...release, tag_name: "v9.9.9" }),
+      JSON.stringify(release),
+    ].join("\n");
   };
   assert.equal(
     await uploadDraft("v1.6.2", files, { repo: "owner/repo", run }),
@@ -133,10 +136,13 @@ test("creates only a draft for an existing tag; authentication errors do not cre
   const calls = [];
   const run = (args) => {
     calls.push(args);
-    if (calls.length === 1) return "[[]]";
-    return JSON.stringify([
-      [{ tag_name: "v1.6.2-rc.1", draft: true, assets: [], html_url: "draft" }],
-    ]);
+    if (calls.length === 1) return "";
+    return JSON.stringify({
+      tag_name: "v1.6.2-rc.1",
+      draft: true,
+      assets: [],
+      html_url: "draft",
+    });
   };
   await uploadDraft("v1.6.2-rc.1", files, { repo: "owner/repo", run });
   assert.ok(

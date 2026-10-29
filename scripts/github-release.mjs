@@ -93,15 +93,17 @@ export async function uploadDraft(tag, files, { repo, run = gh }) {
   // Listing includes authenticated drafts; a missing tag is not inferred from
   // an HTTP error (which could instead mean a permission or network failure).
   const findRelease = () =>
-    JSON.parse(
-      run([
-        "api",
-        `repos/${repo}/releases?per_page=100`,
-        "--paginate",
-        "--slurp",
-      ]),
-    )
-      .flat()
+    run([
+      "api",
+      `repos/${repo}/releases?per_page=100`,
+      "--paginate",
+      "--jq",
+      ".[] | @json",
+    ])
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
       .find((release) => release.tag_name === tag);
   let release = findRelease();
   if (!release) {
