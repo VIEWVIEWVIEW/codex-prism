@@ -23,7 +23,7 @@ const jsonFiles = [
 const cargoFile = "apps/desktop/src-tauri/Cargo.toml";
 const lockFile = "apps/desktop/src-tauri/Cargo.lock";
 const crateVersion =
-  /(\[\[package\]\]\nname = "codex-prism-desktop"\nversion = ")[^"]+(")/;
+  /(\[\[package\]\]\r?\nname = "codex-prism-desktop"\r?\nversion = ")[^"]+(")/;
 export function validateVersion(version) {
   if (
     !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[a-zA-Z0-9]+(?:[.-][a-zA-Z0-9]+)*)?$/.test(
@@ -59,7 +59,7 @@ export async function versions(cwd = root) {
   entries.push([
     lockFile,
     (await readFile(join(cwd, lockFile), "utf8")).match(
-      /\[\[package\]\]\nname = "codex-prism-desktop"\nversion = "([^"]+)"/,
+      /\[\[package\]\]\r?\nname = "codex-prism-desktop"\r?\nversion = "([^"]+)"/,
     )?.[1],
   ]);
   return entries;

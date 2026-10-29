@@ -65,6 +65,16 @@ test("version preparation synchronizes every manifest and rejects invalid input"
   await writeFile(join(cwd, "package.json"), '{"version":"9.0.0"}');
   await assert.rejects(check(cwd), /mismatch/);
 });
+test("version checks and preparation accept Windows CRLF Cargo manifests", async (t) => {
+  const { cwd } = await fixture(t);
+  for (const file of ["Cargo.toml", "Cargo.lock"]) {
+    const path = join(cwd, "apps/desktop/src-tauri", file);
+    await writeFile(path, (await readFile(path, "utf8")).replace(/\n/g, "\r\n"));
+  }
+  assert.equal(await check(cwd, "v1.3.0"), "1.3.0");
+  await prepare("1.6.2", cwd);
+  assert.equal(await check(cwd, "v1.6.2"), "1.6.2");
+});
 test("collect produces versioned installers and source provenance", async (t) => {
   const { cwd, git } = await fixture(t);
   const dir = await collect(cwd);
