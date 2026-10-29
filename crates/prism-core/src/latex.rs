@@ -2436,7 +2436,9 @@ mod outline_navigation_tests {
         assert_eq!(moved.page, 3);
         // An unrelated newer PDF beside the source must not mask the displayed build.
         std::fs::write(root.join("main.pdf"), b"%PDF-newer-external").unwrap();
-        std::fs::File::open(root.join("main.pdf"))
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(root.join("main.pdf"))
             .unwrap()
             .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60))
             .unwrap();
