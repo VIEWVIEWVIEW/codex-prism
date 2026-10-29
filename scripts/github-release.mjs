@@ -108,7 +108,7 @@ export async function uploadDraft(tag, files, { repo, run = gh }) {
   let release = findRelease();
   if (!release) {
     const notes = files.find((path) => basename(path) === "RELEASE_NOTES.md");
-    run([
+    const url = run([
       "release",
       "create",
       tag,
@@ -121,9 +121,10 @@ export async function uploadDraft(tag, files, { repo, run = gh }) {
       "--notes-file",
       notes,
       ...(tag.includes("-") ? ["--prerelease"] : []),
-    ]);
-    release = findRelease();
-    if (!release) throw new Error("Created draft release could not be found");
+    ]).trim();
+    // A successful create made an empty draft. GitHub's list endpoint can lag
+    // behind this write, so do not immediately re-read it before uploading.
+    release = { draft: true, assets: [], html_url: url };
   }
   if (!release.draft) throw new Error("Refusing to modify a published release");
   // Check all collisions before uploading anything. No clobber: retries may

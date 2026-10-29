@@ -137,14 +137,15 @@ test("creates only a draft for an existing tag; authentication errors do not cre
   const run = (args) => {
     calls.push(args);
     if (calls.length === 1) return "";
-    return JSON.stringify({
-      tag_name: "v1.6.2-rc.1",
-      draft: true,
-      assets: [],
-      html_url: "draft",
-    });
+    if (args[0] === "api")
+      throw new Error("Draft listing has not caught up yet");
+    return args[1] === "create" ? "https://example.test/draft\n" : "";
   };
-  await uploadDraft("v1.6.2-rc.1", files, { repo: "owner/repo", run });
+  assert.equal(
+    await uploadDraft("v1.6.2-rc.1", files, { repo: "owner/repo", run }),
+    "https://example.test/draft",
+  );
+  assert.equal(calls.filter((args) => args[0] === "api").length, 1);
   assert.ok(
     calls[1].includes("--draft") &&
       calls[1].includes("--verify-tag") &&
