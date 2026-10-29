@@ -1125,7 +1125,10 @@ pub(crate) fn synctex_view(
     source_line: &str,
     pdf_revision: &str,
 ) -> Result<Option<SourceBox>, String> {
-    let root = Path::new(project_dir);
+    // resolve() returns canonical paths (including Windows verbatim prefixes).
+    // Compare like-for-like so builds use their captured source, not live files.
+    let canonical_root = std::fs::canonicalize(project_dir).map_err(|e| e.to_string())?;
+    let root = canonical_root.as_path();
     let Some((pdf, _)) = find_pdf_revision(root, main_file, Some(pdf_revision))? else {
         return Ok(None);
     };
@@ -2475,6 +2478,14 @@ mod outline_navigation_tests {
         )
         .unwrap()
         .is_none());
+        #[cfg(unix)]
+        {
+            // Exercise the canonical/noncanonical root mismatch on Unix too.
+            let alias = root.join("project-alias");
+            std::os::unix::fs::symlink(root, &alias).unwrap();
+            assert!(synctex_view(alias.to_str().unwrap(), "main.tex",
+                "chapters/results.tex", 20, "\\section{Results}", &revision).unwrap().is_none());
+        }
         std::fs::remove_file(work.join("main.synctex")).unwrap();
         assert!(locate("\\section{Results}", &revision).is_none());
     }
