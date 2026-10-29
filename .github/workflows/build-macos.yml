@@ -2,6 +2,12 @@ name: Build macOS
 
 on:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      release_tag:
+        description: Release tag to build (empty for a test build)
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -26,6 +32,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
 
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
@@ -55,6 +62,11 @@ jobs:
       - name: Install frontend dependencies
         run: corepack pnpm install --frozen-lockfile
 
+      - name: Validate release version
+        if: inputs.release_tag != ''
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/release.mjs check "$RELEASE_TAG"
       - name: Test frontend and backend
         run: |
           corepack pnpm --filter @codex-prism/desktop test
@@ -80,7 +92,7 @@ jobs:
         id: artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: codex-prism-macos-arm64-${{ github.run_number }}
+          name: codex-prism-macos-arm64
           path: |
             apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
             apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/SHA256SUMS

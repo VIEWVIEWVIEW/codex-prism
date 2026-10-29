@@ -10,19 +10,21 @@ codex-prism is a local, single-user desktop application powered by your installe
 
 ![codex-prism workspace with project files, LaTeX source, Codex chat, and a compiled PDF preview](docs/images/codex-prism-workspace.png)
 
-[Quickstart](#quickstart) · [Features](#features) · [Build from source](#build-from-source) · [Releases](https://git.jolibrain.com/beniz/codex-prism/releases)
+[Quickstart](#quickstart) · [Features](#features) · [Build from source](#build-from-source) · [Releases](https://github.com/beniz/codex-prism/releases)
 
 ## Quickstart
 
-Packaged releases currently target **Ubuntu 26.04 LTS, x86_64**.
+The release workflow builds packages for **Ubuntu 26.04 LTS x86_64**, **Windows 10/11 x64**, and **macOS Apple Silicon**. Download published packages from [GitHub Releases](https://github.com/beniz/codex-prism/releases).
 
 **Windows 10/11 x64:** Download the `-setup.exe` installer from the
-[Windows downloads](https://github.com/beniz/codex-prism/actions/workflows/build-windows.yml),
+[GitHub Releases](https://github.com/beniz/codex-prism/releases),
 run it, and follow the setup wizard. Setup installs missing Codex, LaTeX (MiKTeX)
 and WebView2 dependencies automatically, reusing existing installations. It also
 offers Ghostscript for optimized PDF export; complete its setup wizard to enable
 that feature. Then open codex-prism and use **Connection → Sign in** to start
 working. You do not need to build the app or install Node.js or Rust.
+
+**macOS Apple Silicon:** Install the `.dmg`, then install/authenticate Codex and install MacTeX separately. Builds are ad-hoc signed and not notarized. Windows installers are unsigned.
 
 ### 1. Install the application
 
@@ -30,7 +32,7 @@ The following installation commands are for Ubuntu. Windows users can run the
 installer above and continue to **3. Open a project and start writing** after
 signing in.
 
-Download the `.deb` or `.AppImage` from [the releases page](https://git.jolibrain.com/beniz/codex-prism/releases). For version 1.4.0, install the Debian package from your download directory:
+Download the `.deb` or `.AppImage` from [the releases page](https://github.com/beniz/codex-prism/releases). For version 1.4.0, install the Debian package from your download directory:
 
 ```sh
 sudo apt install ./codex-prism-1.4.0-linux-x86_64.deb
@@ -207,7 +209,7 @@ For a hands-on acceptance check, open a disposable LaTeX project, ask Codex to e
 
 ### Creating releases
 
-Linux releases target Ubuntu 26.04 LTS x86_64 and are hosted on [Gitea](https://git.jolibrain.com/beniz/codex-prism/releases). The release tooling supports local builds without a CI runner, checks version consistency, and collects packages with checksums. Uploads create a draft for review before publication.
+Linux releases target Ubuntu 26.04 LTS x86_64 and are hosted on [Gitea](https://github.com/beniz/codex-prism/releases). The release tooling supports local builds without a CI runner, checks version consistency, and collects packages with checksums. Uploads create a draft for review before publication.
 
 See [the release guide](docs/releases/README.md) for version preparation, tagging, building, uploading, and optional Gitea Actions setup.
 

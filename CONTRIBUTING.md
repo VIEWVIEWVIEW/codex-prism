@@ -2,7 +2,7 @@
 
 Contributions are welcome! This guide covers the development environment, workflow, and testing.
 
-Release packaging currently targets Ubuntu 26.04 LTS x86_64; see [the release guide](docs/releases/README.md). Other platform recipes below are retained for future work.
+GitHub release builds target Ubuntu 26.04 LTS x86_64, Windows x64, and macOS Apple Silicon; see [the release guide](docs/releases/README.md).
 
 ## Development Environment
 
@@ -13,7 +13,7 @@ Release packaging currently targets Ubuntu 26.04 LTS x86_64; see [the release gu
 - [Rust](https://rustup.rs/) (repository-pinned 1.88.0)
 - Linux Tauri development libraries: see the [README](README.md).
 - System TeX Live for compilation tests; no embedded compiler libraries are needed to build the app.
-- macOS packaging is deferred. Historical recipes under `docs/releases/` are inactive references and still contain obsolete Tectonic steps; do not use them as current build instructions.
+- macOS Apple Silicon packaging uses `.github/workflows/build-macos.yml`. Historical disabled recipes under `docs/releases/` contain obsolete Tectonic steps; do not use them as current build instructions.
 - Windows x64 builds and prerequisite setup are documented in [the Windows guide](docs/releases/windows.md).
 
 ### Setup

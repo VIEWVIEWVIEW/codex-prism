@@ -72,7 +72,7 @@ The installer is written to
 prerequisite hook are selected automatically by `build:desktop`.
 
 The **Build Windows** GitHub workflow tests and builds the same installer and
-uploads it with SHA-256 checksums. Builds are unsigned unless a Windows signing
+uploads it with SHA-256 checksums. The tag-triggered **Release** workflow calls this build and attaches the installer alongside Linux and macOS packages in a draft GitHub release; see [the release guide](README.md). Builds are unsigned unless a Windows signing
 certificate is configured separately; Windows may show an unknown-publisher warning.
 CI also runs a packaged silent install/uninstall smoke test on its disposable
 runner, using executable dependency fixtures. This verifies the NSIS package and

@@ -23,7 +23,7 @@
     "release:check": "node scripts/release.mjs check",
     "release:build": "node scripts/release.mjs build",
     "release:publish": "node scripts/release.mjs publish",
-    "test:release": "node --test scripts/release.test.mjs"
+    "test:release": "node --test scripts/release.test.mjs scripts/github-release.test.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.13",
