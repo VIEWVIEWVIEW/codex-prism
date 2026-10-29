@@ -5,12 +5,15 @@ param([switch]$CheckOnly, [switch]$SkipGhostscript)
 $ErrorActionPreference = 'Stop'
 
 function Update-ToolPath {
+    # NSIS can launch 32-bit PowerShell: ProgramFiles then names the x86 tree.
+    $nativePrograms = $env:ProgramW6432
+    if (!$nativePrograms) { $nativePrograms = $env:ProgramFiles }
     $paths = @($env:PATH, [Environment]::GetEnvironmentVariable('Path', 'User'),
         [Environment]::GetEnvironmentVariable('Path', 'Machine'),
         "$env:LOCALAPPDATA\Programs\MiKTeX\miktex\bin\x64",
         "$env:LOCALAPPDATA\Microsoft\WinGet\Links",
-        "$env:ProgramFiles\MiKTeX\miktex\bin\x64")
-    $paths += @(Get-ChildItem "$env:ProgramFiles\gs\*\bin" -Directory -ErrorAction SilentlyContinue | Sort-Object FullName | ForEach-Object FullName)
+        "$nativePrograms\MiKTeX\miktex\bin\x64")
+    $paths += @(Get-ChildItem "$nativePrograms\gs\*\bin" -Directory -ErrorAction SilentlyContinue | Sort-Object FullName | ForEach-Object FullName)
     $paths += @(Get-ChildItem "${env:ProgramFiles(x86)}\gs\*\bin" -Directory -ErrorAction SilentlyContinue | Sort-Object FullName | ForEach-Object FullName)
     $paths += @(Get-ChildItem 'C:\texlive\*\bin\windows' -Directory -ErrorAction SilentlyContinue | Sort-Object FullName | ForEach-Object FullName)
     $env:PATH = ($paths | Where-Object { $_ }) -join ';'
@@ -113,10 +116,15 @@ function Install-Prerequisites {
     if (!$CheckOnly) {
         if ($engines.Count -eq 0) {
             Install-WinGetPackage 'MiKTeX.MiKTeX'
-            $miktex = Find-Tool 'miktex.exe'
-            if (!$miktex) { throw 'MiKTeX installation did not provide miktex.exe.' }
-            # Only configure the MiKTeX installation just created by this setup.
-            Invoke-Checked (Find-Tool 'initexmf.exe') @('--set-config-value=[MPM]AutoInstall=1')
+            # WinGet installs with --scope user. Never resolve configuration tools
+            # through PATH: an older, unusable distribution can still be first.
+            $newTexDirectory = Join-Path $env:LOCALAPPDATA 'Programs\MiKTeX\miktex\bin\x64'
+            $miktex = Find-Tool (Join-Path $newTexDirectory 'miktex.exe')
+            $initexmf = Find-Tool (Join-Path $newTexDirectory 'initexmf.exe')
+            if (!$miktex -or !$initexmf) {
+                throw "MiKTeX installation did not provide miktex.exe and initexmf.exe in $newTexDirectory. Existing installations were not configured. Repair the per-user MiKTeX installation and rerun setup."
+            }
+            Invoke-Checked $initexmf @('--set-config-value=[MPM]AutoInstall=1')
             Invoke-Checked $miktex @('packages', 'update-package-database')
             # The basic installer already includes some of these. `install`
             # rejects installed packages; `require` installs only missing ones.

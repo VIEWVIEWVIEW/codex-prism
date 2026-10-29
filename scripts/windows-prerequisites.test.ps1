@@ -2,6 +2,30 @@
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\..\apps\desktop\src-tauri\windows\prerequisites.ps1"
 function Assert($Condition, $Message) { if (!$Condition) { throw $Message } }
+# Exercise real fallback discovery with the environment seen by 32-bit NSIS.
+$discoveryRoot = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString())
+$savedEnvironment = @{}
+foreach ($name in @('PATH', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432')) {
+    $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+}
+try {
+    $env:ProgramW6432 = Join-Path $discoveryRoot 'Program Files'
+    $env:ProgramFiles = Join-Path $discoveryRoot 'Program Files (x86)'
+    ${env:ProgramFiles(x86)} = $env:ProgramFiles
+    $nativeGs = Join-Path $env:ProgramW6432 'gs\gs10.08.0\bin'
+    $x86Gs = Join-Path $env:ProgramFiles 'gs\gs10.07.0\bin'
+    New-Item -ItemType Directory -Path $nativeGs, $x86Gs -Force | Out-Null
+    Update-ToolPath
+    $paths = $env:PATH -split ';'
+    Assert ($paths -contains $nativeGs) '32-bit setup must discover native 64-bit Ghostscript without PATH registration'
+    Assert ($paths -contains $x86Gs) '32-bit Ghostscript must remain discoverable'
+    Assert ($paths -contains (Join-Path $env:ProgramW6432 'MiKTeX\miktex\bin\x64')) '32-bit setup must search native system-wide MiKTeX'
+} finally {
+    foreach ($name in $savedEnvironment.Keys) {
+        [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
+    }
+    Remove-Item -LiteralPath $discoveryRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 $engineProbe = ${function:Test-TexEngine}
 # Exercise actual directory selection before mocking installation decisions.
 function Test-TexEngine([string]$Name) { return $Name -eq 'C:\fixture first\xelatex.exe' -or $Name -eq 'C:\fixture second\pdflatex.exe' }
@@ -32,16 +56,23 @@ function Find-TexTool([string]$Name) { Find-Tool $Name }
 function Install-WinGetPackage([string]$Id) {
     $script:installed += $Id
     if ($script:failInstall) { throw 'Fixture download failure' }
-    if ($Id -eq 'MiKTeX.MiKTeX') { $script:available += $script:tex + @('miktex.exe', 'initexmf.exe') }
+    if ($Id -eq 'MiKTeX.MiKTeX') {
+        $script:available += $script:tex
+        if (!$script:missingNewTexTools) { $script:available += @($script:newMiktex, $script:newInitexmf) }
+    }
     if ($Id -eq 'OpenAI.Codex') { $script:available += 'codex.exe' }
 }
 function Invoke-Checked([string]$Program, [string[]]$Arguments) {
     $script:configured += $Program
     # Match MiKTeX's real response after basic setup: Biber is already present.
-    if ($Program -eq 'miktex.exe' -and $Arguments[0] -eq 'packages' -and $Arguments[1] -eq 'install') {
+    if ($Program -eq $script:newMiktex -and $Arguments[0] -eq 'packages' -and $Arguments[1] -eq 'install') {
         throw 'biber-windows-x64: package is already installed'
     }
 }
+$newTexDirectory = Join-Path $env:LOCALAPPDATA 'Programs\MiKTeX\miktex\bin\x64'
+$script:newMiktex = Join-Path $newTexDirectory 'miktex.exe'
+$script:newInitexmf = Join-Path $newTexDirectory 'initexmf.exe'
+$script:missingNewTexTools = $false
 $script:tex = @('pdflatex.exe', 'xelatex.exe', 'lualatex.exe', 'bibtex.exe', 'biber.exe')
 $script:available = $script:tex + @('codex.cmd', 'gswin64c.exe')
 $script:installed = @(); $script:configured = @(); $script:failInstall = $false
@@ -52,7 +83,21 @@ Assert ($script:installed.Count -eq 0 -and $script:configured.Count -eq 0) 'Exis
 $script:available = @('gswin64c.exe')
 Install-Prerequisites
 Assert (($script:installed -join ',') -eq 'MiKTeX.MiKTeX,OpenAI.Codex') 'Missing LaTeX and Codex must be installed'
-Assert ($script:configured -contains 'initexmf.exe') 'New MiKTeX must enable missing package downloads'
+Assert ($script:configured -contains $script:newInitexmf) 'New MiKTeX must enable missing package downloads'
+
+# Old PATH utilities must never receive configuration intended for the new copy.
+$script:available = @('gswin64c.exe', 'miktex.exe', 'initexmf.exe')
+$script:installed = @(); $script:configured = @()
+Install-Prerequisites
+Assert ($script:configured -contains $script:newMiktex -and $script:configured -contains $script:newInitexmf) 'Provision the newly installed per-user distribution'
+Assert ($script:configured -notcontains 'miktex.exe' -and $script:configured -notcontains 'initexmf.exe') 'Do not configure old PATH utilities'
+
+$script:available = @('gswin64c.exe', 'miktex.exe', 'initexmf.exe')
+$script:installed = @(); $script:configured = @(); $script:missingNewTexTools = $true
+$failed = $false
+try { Install-Prerequisites } catch { $failed = $_ -match 'Existing installations were not configured' }
+Assert ($failed -and $script:configured.Count -eq 0) 'Missing new utilities must fail before changing any distribution'
+$script:missingNewTexTools = $false
 
 $script:available = @('gswin64c.exe'); $script:installed = @(); $script:failInstall = $true
 $failed = $false
@@ -108,4 +153,4 @@ $SkipGhostscript = $false
 function Start-Process { throw 'The operation was canceled by the user' }
 $warnings = @(Install-Prerequisites 3>&1)
 Assert ($warnings -match 'Optional Ghostscript setup was not completed') 'Canceling optional Ghostscript must not abort app setup'
-Write-Host 'PASS: 13 prerequisite scenarios and native exit-code handling'
+Write-Host 'PASS: prerequisite scenarios, native directory discovery, distribution isolation, and native exit-code handling'
